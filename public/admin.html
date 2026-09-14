@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Admin console · Red</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="app" data-page="admin">
+  <header class="topbar">
+    <a class="wordmark" href="/"><span class="wordmark-mark" aria-hidden="true"></span>Red</a>
+    <nav class="app-nav" aria-label="Sections">
+      <a href="#projects" data-tab="projects">My projects</a>
+      <a href="#people" data-tab="people">People &amp; roles</a>
+    </nav>
+    <div class="topbar-end">
+      <span class="role-badge is-admin">Admin</span>
+      <button class="account-button" id="account-button" type="button" popovertarget="account-menu">
+        <span class="avatar is-admin" id="account-avatar" aria-hidden="true"></span>
+        <span class="account-name" id="account-name"></span>
+      </button>
+    </div>
+  </header>
+
+  <div class="menu" id="account-menu" popover>
+    <div class="menu-identity">
+      <span class="menu-name" id="menu-name"></span>
+      <span class="menu-email" id="menu-email"></span>
+    </div>
+    <button class="menu-item" type="button" id="change-password">Change password</button>
+    <button class="menu-item" type="button" id="logout">Log out</button>
+  </div>
+
+  <main class="page" data-panel="projects">
+    <header class="page-header">
+      <div>
+        <h1>My projects</h1>
+        <p>Only you can see these, even as an admin.</p>
+      </div>
+      <button class="btn btn-primary" type="button" data-new-project>New project</button>
+    </header>
+    <div id="projects"></div>
+  </main>
+
+  <main class="page" data-panel="people" hidden>
+    <header class="page-header">
+      <div>
+        <h1>People &amp; roles</h1>
+        <p id="people-summary">Loading people…</p>
+      </div>
+      <button class="btn btn-primary" type="button" id="add-person">Add person</button>
+    </header>
+
+    <div class="toolbar">
+      <div class="filter" id="role-filter" role="group" aria-label="Filter by role">
+        <button type="button" data-role="all" aria-pressed="true">All <span class="count" data-count="all"></span></button>
+        <button type="button" data-role="admin" aria-pressed="false">Admins <span class="count" data-count="admin"></span></button>
+        <button type="button" data-role="user" aria-pressed="false">Users <span class="count" data-count="user"></span></button>
+      </div>
+      <input class="search" id="user-search" type="search" placeholder="Search by name or email" aria-label="Search people">
+    </div>
+
+    <div class="surface table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">Person</th>
+            <th scope="col">Role</th>
+            <th scope="col" class="num">Projects</th>
+            <th scope="col">Joined</th>
+            <th scope="col"><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody id="user-rows"></tbody>
+      </table>
+    </div>
+  </main>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

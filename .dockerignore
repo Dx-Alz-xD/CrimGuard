@@ -1,0 +1,10 @@
+red.db
+red.db-*
+node_modules
+test
+.git
+.gitignore
+*.md
+docker-compose.yml
+demo
+scripts

@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Sign in · Red</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-page="login" data-portal="user">
+  <main class="auth">
+    <section class="auth-side">
+      <a class="wordmark" href="/"><span class="wordmark-mark" aria-hidden="true"></span>Red</a>
+
+      <div class="auth-body">
+        <nav class="segmented" aria-label="Choose how to sign in">
+          <a href="/login" aria-current="page">User</a>
+          <a href="/admin/login">Admin</a>
+        </nav>
+
+        <header class="auth-head">
+          <h1>Sign in to Red</h1>
+          <p>Use the email and password for your account.</p>
+        </header>
+
+        <form class="auth-form" id="auth-form">
+          <div class="field">
+            <label class="field-label" for="email">Email</label>
+            <input id="email" name="email" type="email" autocomplete="username" required autofocus>
+          </div>
+          <div class="field">
+            <label class="field-label" for="password">Password</label>
+            <div class="input-wrap">
+              <input id="password" name="password" type="password" autocomplete="current-password" required>
+              <button class="reveal" type="button" data-reveal="password" aria-pressed="false">Show</button>
+            </div>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
+          <button class="btn btn-primary btn-lg btn-block" type="submit">Sign in</button>
+        </form>
+
+        <p class="auth-alt">New to Red? <a href="/signup">Create an account</a></p>
+      </div>
+    </section>
+
+    <aside class="auth-panel">
+      <span class="auth-panel-mark" aria-hidden="true">Red</span>
+      <div class="auth-panel-copy">
+        <p class="auth-panel-title">Your projects are visible only to you.</p>
+        <ul class="auth-panel-list">
+          <li>Private by default, admins included</li>
+          <li>Plan, run and finish work from one list</li>
+          <li>Change your password whenever you need to</li>
+        </ul>
+      </div>
+    </aside>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+services:
+  red:
+    build: .
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      RED_ADMIN_NAME: ${RED_ADMIN_NAME:-Red Admin}
+      RED_ADMIN_EMAIL: ${RED_ADMIN_EMAIL:-admin@red.local}
+      # Only used to create the first admin, but required so it never gets a default password.
+      RED_ADMIN_PASSWORD: ${RED_ADMIN_PASSWORD:?Set RED_ADMIN_PASSWORD in your environment or a .env file}
+    volumes:
+      - red-data:/data
+    restart: unless-stopped
+
+volumes:
+  red-data:

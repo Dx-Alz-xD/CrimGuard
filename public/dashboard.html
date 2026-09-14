@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Projects · Red</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="app" data-page="dashboard">
+  <header class="topbar">
+    <a class="wordmark" href="/"><span class="wordmark-mark" aria-hidden="true"></span>Red</a>
+    <nav class="app-nav" aria-label="Sections">
+      <a href="/dashboard" aria-current="page">Projects</a>
+    </nav>
+    <div class="topbar-end">
+      <span class="role-badge">User</span>
+      <button class="account-button" id="account-button" type="button" popovertarget="account-menu">
+        <span class="avatar" id="account-avatar" aria-hidden="true"></span>
+        <span class="account-name" id="account-name"></span>
+      </button>
+    </div>
+  </header>
+
+  <div class="menu" id="account-menu" popover>
+    <div class="menu-identity">
+      <span class="menu-name" id="menu-name"></span>
+      <span class="menu-email" id="menu-email"></span>
+    </div>
+    <button class="menu-item" type="button" id="change-password">Change password</button>
+    <button class="menu-item" type="button" id="logout">Log out</button>
+  </div>
+
+  <main class="page">
+    <header class="page-header">
+      <div>
+        <h1>Projects</h1>
+        <p>Only you can see these.</p>
+      </div>
+      <button class="btn btn-primary" type="button" data-new-project>New project</button>
+    </header>
+    <div id="projects"></div>
+  </main>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
