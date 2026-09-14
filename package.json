@@ -3,13 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "description": "Red: private projects per account, separate user and admin logins, admin-managed roles.",
-  "main": "server.js",
+  "main": "src/server.js",
   "engines": {
     "node": ">=22.13"
   },
   "scripts": {
-    "start": "node server.js",
+    "start": "node src/server.js",
     "test": "node --test",
-    "build:demo": "node scripts/build-demo.js"
+    "build:demo": "node scripts/demo/build.js"
   }
 }

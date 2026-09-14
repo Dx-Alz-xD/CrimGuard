@@ -7,7 +7,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const root = path.join(__dirname, '..');
+const root = path.join(__dirname, '..', '..'); // this script lives in scripts/demo/
 const publicDir = path.join(root, 'public');
 const outDir = path.join(root, 'demo');
 

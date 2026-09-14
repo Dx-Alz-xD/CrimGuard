@@ -73,7 +73,12 @@ npm run build:demo
   device, and signs out your other devices.
 - **When an admin sets someone else's password, that person is signed out
   everywhere** and needs the new password to get back in.
-- **Deleting a person also deletes their projects and sessions.** It can't be undone.
+- **Deleting a person also deletes their projects, files and sessions.** It can't be undone.
+- **Projects hold files.** Open a project to upload files (drag and drop works), then
+  download, rename, replace with a new version, or delete them. Files are as private
+  as the project: nobody else can reach them, admins included. Each file can be up to
+  10 MB (set `RED_MAX_FILE_MB` to change it), and names are unique within a project.
+  Files are stored in the SQLite database, so the `/data` volume holds everything.
 - **Projects are private.** Admins manage roles, not other people's projects,
   and see only how many projects each person has.
 
@@ -124,15 +129,16 @@ several replicas would give each one its own separate database.
 ## Layout
 
 ```
-server.js            startup: config checks, first admin, graceful shutdown
-src/app.js           HTTP server: pages, JSON API, sessions, role checks
-src/auth.js          scrypt password hashing, session tokens, cookies
-src/db.js            SQLite schema and first-admin creation
+src/server.js        startup: config checks, first admin, graceful shutdown
+src/app.js           HTTP server: pages, JSON API, sessions, role checks, files
+src/security/        scrypt password hashing, session tokens, cookies
+src/db/              SQLite schema (users, sessions, projects, project_files)
 public/*.html        landing, both logins, sign-up, dashboard, admin console
 public/static/       app.js (all client code), styles.css, favicon
-test/app.test.js     end-to-end API tests (node --test)
-scripts/             build-demo.js and demo-api.js, which make the static demo
+test/helpers.js      end-to-end API tests (node --test)
+scripts/demo/        build.js and demo-api.js, which make the static demo
 demo/                the generated static demo (npm run build:demo)
+database/crimguard/  CrimGuard PostgreSQL schema (separate design, not used by the app)
 Dockerfile           production image, runs as non-root, health check
 docker-compose.yml   one-command self-hosting with a data volume
 ```
@@ -152,6 +158,12 @@ docker-compose.yml   one-command self-hosting with a data volume
 | `PATCH /api/admin/users/:id/role`    | admin, not their own account |
 | `PATCH /api/admin/users/:id/password`| admin, any account; signs that account out elsewhere |
 | `DELETE /api/admin/users/:id`        | admin, not their own account |
+| `GET /api/projects/:id/files`        | signed in, own projects only |
+| `POST /api/projects/:id/files`       | own projects; raw bytes, `X-File-Name` (URL-encoded) |
+| `GET /api/projects/:id/files/:fileId/download` | own projects; always sent as a download |
+| `PATCH /api/projects/:id/files/:fileId` `{name}` | own projects; rename |
+| `PUT /api/projects/:id/files/:fileId/content` | own projects; raw bytes, replaces the contents |
+| `DELETE /api/projects/:id/files/:fileId` | own projects |
 | `GET /healthz`                       | anyone |
 
 ### Security notes

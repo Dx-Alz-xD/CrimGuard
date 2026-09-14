@@ -1,7 +1,7 @@
 'use strict';
 
 const { DatabaseSync } = require('node:sqlite');
-const { hashPassword } = require('./auth');
+const { hashPassword } = require('../security/passwords');
 
 const ROLES = ['user', 'admin'];
 const STATUSES = ['planning', 'active', 'done'];
@@ -39,6 +39,21 @@ function openDb(file) {
     );
 
     CREATE INDEX IF NOT EXISTS projects_by_owner ON projects(owner_id);
+
+    -- File contents live in the database, so the /data volume holds everything and deleting a
+    -- project (or its owner) removes its files through the cascade. Names are unique per project,
+    -- ignoring case, so two files can't be confused in the list.
+    CREATE TABLE IF NOT EXISTS project_files (
+      id         INTEGER PRIMARY KEY,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name       TEXT NOT NULL COLLATE NOCASE,
+      type       TEXT NOT NULL DEFAULT 'application/octet-stream',
+      size       INTEGER NOT NULL,
+      content    BLOB NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (project_id, name)
+    );
   `);
   return db;
 }

@@ -1,8 +1,8 @@
 'use strict';
 
 const path = require('node:path');
-const { openDb, hasAdmin, ensureAdmin } = require('./src/db');
-const { createApp } = require('./src/app');
+const { openDb, hasAdmin, ensureAdmin } = require('./db');
+const { createApp } = require('./app');
 
 const isProduction = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT) || 3000;
@@ -16,7 +16,8 @@ function fail(message) {
 }
 
 async function main() {
-  const db = openDb(process.env.RED_DB || path.join(__dirname, 'red.db'));
+  // Default database file stays at the project root (Red/red.db), where it lived before this file moved into src/.
+  const db = openDb(process.env.RED_DB || path.join(__dirname, '..', 'red.db'));
 
   if (!hasAdmin(db)) {
     const password = process.env.RED_ADMIN_PASSWORD;
@@ -34,7 +35,12 @@ async function main() {
     console.log(`Created admin account ${admin.email}${password ? '' : ` with the default password "${DEFAULT_ADMIN_PASSWORD}"`}`);
   }
 
-  const server = createApp({ db, secureCookies: process.env.RED_SECURE_COOKIES === '1' });
+  const maxFileMb = Number(process.env.RED_MAX_FILE_MB);
+  const server = createApp({
+    db,
+    secureCookies: process.env.RED_SECURE_COOKIES === '1',
+    maxFileBytes: maxFileMb > 0 ? maxFileMb * 1024 * 1024 : undefined,
+  });
   server.listen(PORT, HOST, () => {
     console.log(`Red is running at http://localhost:${server.address().port}`);
   });

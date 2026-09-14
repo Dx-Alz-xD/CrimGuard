@@ -9,7 +9,7 @@ ENV NODE_ENV=production \
     RED_DB=/data/red.db
 
 WORKDIR /app
-COPY package.json server.js ./
+COPY package.json ./
 COPY src ./src
 COPY public ./public
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -26,4 +26,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
   CMD wget -qO /dev/null "http://127.0.0.1:${PORT}/healthz" || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["node", "server.js"]
+CMD ["node", "src/server.js"]

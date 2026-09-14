@@ -3,7 +3,7 @@
 const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const auth = require('./auth');
+const auth = require('./security/passwords');
 const { ROLES, STATUSES } = require('./db');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
@@ -11,6 +11,11 @@ const STATIC_DIR = path.join(PUBLIC_DIR, 'static');
 const SESSION_COOKIE = 'red_session';
 const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60;
 const MAX_BODY_BYTES = 64 * 1024;
+const DEFAULT_MAX_FILE_BYTES = 10 * 1024 * 1024;
+
+// Uploads send raw bytes instead of JSON. Like JSON, application/octet-stream can't be sent
+// cross-site without a CORS preflight, so these routes keep the same CSRF protection.
+const BINARY_ROUTES = new Set(['POST /api/projects/:id/files', 'PUT /api/projects/:id/files/:id/content']);
 
 const PAGES = {
   '/': 'index.html',
@@ -128,6 +133,61 @@ async function readJson(req) {
   return body;
 }
 
+const formatBytes = (bytes) => (bytes >= 1024 * 1024 ? `${Math.round(bytes / (1024 * 1024))} MB` : `${Math.round(bytes / 1024)} KB`);
+
+async function readBinary(req, res, maxBytes) {
+  const tooLarge = () => {
+    res.setHeader('Connection', 'close'); // don't keep reading an upload we've already refused
+    return new HttpError(413, `Files can be up to ${formatBytes(maxBytes)}.`);
+  };
+  if (Number(req.headers['content-length']) > maxBytes) throw tooLarge();
+
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) throw tooLarge();
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, size);
+}
+
+// Keeps only the last path segment, drops control characters and tidies whitespace.
+function cleanFileName(value) {
+  const name = (typeof value === 'string' ? value : '')
+    .split(/[\\/]/)
+    .pop()
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!name || name === '.' || name === '..') throw new HttpError(400, 'Give the file a name.');
+  if (name.length > 255) throw new HttpError(400, 'File names can be up to 255 characters.');
+  return name;
+}
+
+function fileNameFromHeader(value) {
+  try {
+    return cleanFileName(decodeURIComponent(String(value ?? '')));
+  } catch (err) {
+    if (err instanceof HttpError) throw err;
+    throw new HttpError(400, 'The file name could not be read.');
+  }
+}
+
+function fileType(value) {
+  const type = String(value ?? '').trim().toLowerCase();
+  return type.length <= 100 && /^[a-z0-9][\w!#$&^.+-]*\/[a-z0-9][\w!#$&^.+-]*$/.test(type) ? type : 'application/octet-stream';
+}
+
+function contentDisposition(name) {
+  const fallback = name.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  const encoded = encodeURIComponent(name).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
+
+const duplicateFileName = (name) =>
+  new HttpError(409, `A file named "${name}" is already in this project. Rename one of them, or replace the existing file.`);
+
 function sendJson(res, status, data) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(JSON.stringify(data));
@@ -149,7 +209,7 @@ async function serveStatic(res, relative) {
   res.end(data);
 }
 
-function createApp({ db, secureCookies = false }) {
+function createApp({ db, secureCookies = false, maxFileBytes = DEFAULT_MAX_FILE_BYTES }) {
   const q = {
     ping: db.prepare('SELECT 1'),
     userByEmail: db.prepare('SELECT * FROM users WHERE email = ?'),
@@ -179,12 +239,28 @@ function createApp({ db, secureCookies = false }) {
 
     // Every project query is scoped by owner_id: another account's project is indistinguishable from a missing one.
     listProjects: db.prepare(`
-      SELECT id, name, description, status, created_at, updated_at
-      FROM projects WHERE owner_id = ?
-      ORDER BY updated_at DESC, id DESC`),
+      SELECT p.id, p.name, p.description, p.status, p.created_at, p.updated_at,
+             (SELECT COUNT(*) FROM project_files f WHERE f.project_id = p.id) AS file_count
+      FROM projects p WHERE p.owner_id = ?
+      ORDER BY p.updated_at DESC, p.id DESC`),
     getProject: db.prepare(`
-      SELECT id, name, description, status, created_at, updated_at
-      FROM projects WHERE id = ? AND owner_id = ?`),
+      SELECT p.id, p.name, p.description, p.status, p.created_at, p.updated_at,
+             (SELECT COUNT(*) FROM project_files f WHERE f.project_id = p.id) AS file_count
+      FROM projects p WHERE p.id = ? AND p.owner_id = ?`),
+    touchProject: db.prepare(`UPDATE projects SET updated_at = datetime('now') WHERE id = ?`),
+
+    // Files are always reached through a project the signed-in person owns. Listing never loads contents.
+    listFiles: db.prepare(`
+      SELECT id, name, type, size, created_at, updated_at
+      FROM project_files WHERE project_id = ?
+      ORDER BY updated_at DESC, id DESC`),
+    getFile: db.prepare('SELECT id, name, type, size, created_at, updated_at FROM project_files WHERE id = ? AND project_id = ?'),
+    getFileContent: db.prepare('SELECT name, content FROM project_files WHERE id = ? AND project_id = ?'),
+    fileIdByName: db.prepare('SELECT id FROM project_files WHERE project_id = ? AND name = ?'),
+    insertFile: db.prepare('INSERT INTO project_files (project_id, name, type, size, content) VALUES (?, ?, ?, ?, ?)'),
+    renameFile: db.prepare(`UPDATE project_files SET name = ?, updated_at = datetime('now') WHERE id = ? AND project_id = ?`),
+    replaceFile: db.prepare(`UPDATE project_files SET type = ?, size = ?, content = ?, updated_at = datetime('now') WHERE id = ? AND project_id = ?`),
+    deleteFile: db.prepare('DELETE FROM project_files WHERE id = ? AND project_id = ?'),
     insertProject: db.prepare('INSERT INTO projects (owner_id, name, description, status) VALUES (?, ?, ?, ?)'),
     updateProject: db.prepare(`
       UPDATE projects SET name = ?, description = ?, status = ?, updated_at = datetime('now')
@@ -230,6 +306,18 @@ function createApp({ db, secureCookies = false }) {
     const user = requireUser(req);
     if (user.role !== 'admin') throw new HttpError(403, 'Admin access required.');
     return user;
+  }
+
+  function requireOwnProject(req, projectId) {
+    const project = q.getProject.get(projectId, requireUser(req).id);
+    if (!project) throw new HttpError(404, 'Project not found.');
+    return project;
+  }
+
+  function requireFile(project, fileId) {
+    const file = q.getFile.get(fileId, project.id);
+    if (!file) throw new HttpError(404, 'File not found.');
+    return file;
   }
 
   // --- accounts -------------------------------------------------------------
@@ -284,15 +372,18 @@ function createApp({ db, secureCookies = false }) {
 
   async function handleApi(req, res, pathname) {
     const { method } = req;
+    // Numeric path segments become ":id" in the route key; the first is `id`, the second (a file) is `subId`.
+    const [id, subId] = [...pathname.matchAll(/\/(\d{1,15})(?=\/|$)/g)].map((match) => Number(match[1]));
+    const routeKey = `${method} ${pathname.replace(/\/\d{1,15}(?=\/|$)/g, '/:id')}`;
 
-    // A cross-site page can't send application/json without a CORS preflight, which this
-    // server never grants. Together with SameSite=Strict cookies, that blocks CSRF.
-    if (method !== 'GET' && !String(req.headers['content-type']).startsWith('application/json')) {
+    // A cross-site page can't send application/json or application/octet-stream without a CORS
+    // preflight, which this server never grants. Together with SameSite=Strict cookies, that blocks CSRF.
+    const contentType = String(req.headers['content-type']);
+    if (BINARY_ROUTES.has(routeKey)) {
+      if (!contentType.startsWith('application/octet-stream')) throw new HttpError(415, 'Send the file as application/octet-stream.');
+    } else if (method !== 'GET' && !contentType.startsWith('application/json')) {
       throw new HttpError(415, 'Requests must be sent as JSON.');
     }
-
-    const id = Number(pathname.match(/\/(\d{1,15})(?:\/|$)/)?.[1]);
-    const routeKey = `${method} ${pathname.replace(/\/\d{1,15}(?=\/|$)/, '/:id')}`;
 
     switch (routeKey) {
       case 'POST /api/signup':
@@ -347,6 +438,77 @@ function createApp({ db, secureCookies = false }) {
       case 'DELETE /api/projects/:id': {
         const user = requireUser(req);
         if (q.deleteProject.run(id, user.id).changes === 0) throw new HttpError(404, 'Project not found.');
+        res.writeHead(204);
+        return res.end();
+      }
+
+      case 'GET /api/projects/:id/files': {
+        const project = requireOwnProject(req, id);
+        return sendJson(res, 200, { files: q.listFiles.all(project.id), maxFileBytes });
+      }
+
+      case 'POST /api/projects/:id/files': {
+        const project = requireOwnProject(req, id);
+        const name = fileNameFromHeader(req.headers['x-file-name']);
+        // Check the name before reading the body, so a clash doesn't cost a full upload.
+        if (q.fileIdByName.get(project.id, name)) throw duplicateFileName(name);
+        const content = await readBinary(req, res, maxFileBytes);
+        let fileId;
+        try {
+          fileId = q.insertFile.run(project.id, name, fileType(req.headers['x-file-type']), content.length, content).lastInsertRowid;
+        } catch (err) {
+          if (/UNIQUE constraint failed/.test(err.message)) throw duplicateFileName(name);
+          throw err;
+        }
+        q.touchProject.run(project.id);
+        return sendJson(res, 201, { file: q.getFile.get(fileId, project.id) });
+      }
+
+      case 'GET /api/projects/:id/files/:id/download': {
+        const project = requireOwnProject(req, id);
+        const file = q.getFileContent.get(subId, project.id);
+        if (!file) throw new HttpError(404, 'File not found.');
+        res.writeHead(200, {
+          // Always a download with a generic type: an uploaded HTML or SVG file must never render on this origin.
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': file.content.byteLength,
+          'Content-Disposition': contentDisposition(file.name),
+          'Content-Security-Policy': "default-src 'none'; sandbox",
+          'Cache-Control': 'private, no-store',
+        });
+        return res.end(file.content);
+      }
+
+      case 'PATCH /api/projects/:id/files/:id': {
+        const project = requireOwnProject(req, id);
+        requireFile(project, subId);
+        const name = cleanFileName((await readJson(req)).name);
+        const clash = q.fileIdByName.get(project.id, name);
+        if (clash && clash.id !== subId) throw duplicateFileName(name);
+        try {
+          q.renameFile.run(name, subId, project.id);
+        } catch (err) {
+          if (/UNIQUE constraint failed/.test(err.message)) throw duplicateFileName(name);
+          throw err;
+        }
+        q.touchProject.run(project.id);
+        return sendJson(res, 200, { file: q.getFile.get(subId, project.id) });
+      }
+
+      case 'PUT /api/projects/:id/files/:id/content': {
+        const project = requireOwnProject(req, id);
+        requireFile(project, subId);
+        const content = await readBinary(req, res, maxFileBytes);
+        const { changes } = q.replaceFile.run(fileType(req.headers['x-file-type']), content.length, content, subId, project.id);
+        if (changes === 0) throw new HttpError(404, 'File not found.');
+        q.touchProject.run(project.id);
+        return sendJson(res, 200, { file: q.getFile.get(subId, project.id) });
+      }
+
+      case 'DELETE /api/projects/:id/files/:id': {
+        const project = requireOwnProject(req, id);
+        if (q.deleteFile.run(subId, project.id).changes === 0) throw new HttpError(404, 'File not found.');
+        q.touchProject.run(project.id);
         res.writeHead(204);
         return res.end();
       }

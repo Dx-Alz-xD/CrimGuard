@@ -763,6 +763,150 @@ select {
 
 /* ---- toast ------------------------------------------------------------------- */
 
+/* ---- project panel and files -------------------------------------------------- */
+
+.project-open {
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  color: var(--ink);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.project-open:hover { color: var(--red-text); text-decoration: underline; text-underline-offset: 0.18em; }
+.project-files { color: var(--slate); }
+
+.drawer {
+  width: min(640px, 100%);
+  max-width: 100%;
+  height: 100dvh;
+  max-height: 100dvh;
+  inset: 0 0 0 auto;
+  margin: 0;
+  padding: 0;
+  color: var(--ink);
+  background: var(--paper);
+  border: 0;
+  border-left: 1px solid var(--line);
+  box-shadow: var(--shadow-float);
+}
+.drawer[open] { display: flex; flex-direction: column; }
+.drawer::backdrop { background: rgba(15, 17, 21, 0.4); }
+
+.drawer-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 24px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.drawer-title { font-size: 22px; font-weight: 680; font-stretch: 106%; letter-spacing: -0.015em; overflow-wrap: anywhere; }
+.drawer-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-top: 8px; font-size: 13px; color: var(--slate); }
+.drawer-head-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.drawer-body { flex: 1; overflow-y: auto; display: grid; align-content: start; gap: 26px; padding: 22px 24px 40px; }
+.drawer-desc { white-space: pre-wrap; overflow-wrap: anywhere; }
+.drawer-desc.is-empty { color: var(--slate); }
+
+.icon-button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  color: var(--slate);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.icon-button:hover { color: var(--ink); background: var(--hover); }
+
+.files { display: grid; gap: 12px; }
+.files-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 12px; }
+.files-head h3 { font-size: 16px; font-weight: 650; }
+.files-summary { font-size: 13px; color: var(--slate); font-variant-numeric: tabular-nums; }
+
+.dropzone {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 20px 16px;
+  font-size: 14px;
+  text-align: center;
+  color: var(--slate);
+  background: var(--canvas);
+  border: 1px dashed var(--line-strong);
+  border-radius: 10px;
+  transition: border-color 0.12s, background-color 0.12s;
+}
+.dropzone.is-dragging { color: var(--ink); background: var(--red-wash); border-color: var(--red); }
+.link-button {
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--red-text);
+  background: none;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 0.18em;
+  cursor: pointer;
+}
+
+.file-list { list-style: none; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; }
+.file-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}
+.file-row:first-child { border-top: 0; }
+.file-row.is-busy { opacity: 0.6; }
+.file-badge {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 46px;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--slate);
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.file-main { min-width: 0; }
+/* One line each beside the actions; long names end in an ellipsis and show in full on hover (title). */
+.file-name { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.file-meta { overflow: hidden; font-size: 13px; color: var(--slate); font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
+.file-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; }
+.file-rename { display: flex; flex-wrap: wrap; gap: 6px; }
+.file-rename input { flex: 1 1 12rem; height: 34px; font-size: 14px; }
+.file-row.is-renaming .file-main { grid-column: 2 / -1; }
+.file-error { grid-column: 2 / -1; font-size: 13px; color: var(--red-text); }
+
+@media (max-width: 640px) {
+  .drawer-head, .drawer-body { padding-inline: 16px; }
+  .file-row { grid-template-columns: 36px minmax(0, 1fr); }
+  .file-badge { width: 36px; height: 40px; }
+  .file-actions { grid-column: 2; justify-content: flex-start; gap: 0; margin-left: -8px; }
+  .file-actions .btn-sm { padding: 0 8px; } /* keeps all four actions on one line at phone width */
+  /* Actions sit below the name here, so long names can wrap in full instead of being cut off. */
+  .file-name, .file-meta { white-space: normal; overflow-wrap: anywhere; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .drawer[open] { animation: drawer-in 0.18s ease-out; }
+  @keyframes drawer-in {
+    from { transform: translateX(24px); }
+  }
+}
+
 .toast {
   position: fixed;
   left: 50%;

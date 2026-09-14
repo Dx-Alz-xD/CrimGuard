@@ -27,14 +27,27 @@
   const now = () => sqlTime(new Date());
   const daysAgo = (days) => sqlTime(new Date(Date.now() - days * 86400000));
 
+  // Browser storage holds about 5 MB, and file contents are kept as base64, so the demo's limit is smaller than the server's.
+  const DEMO_MAX_FILE_BYTES = 1024 * 1024;
+  const bytesToBase64 = (bytes) => {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return btoa(binary);
+  };
+  const base64ToBytes = (base64) => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+  const textBytes = (text) => new TextEncoder().encode(text);
+
   function seed() {
     const user = (id, name, email, password, role, age) => ({ id, name, email, password, role, created_at: daysAgo(age) });
     const project = (id, ownerId, name, status, description, age) =>
       ({ id, owner_id: ownerId, name, status, description, created_at: daysAgo(age + 12), updated_at: daysAgo(age) });
+    const file = (id, projectId, name, type, text, age) =>
+      ({ id, project_id: projectId, name, type, size: textBytes(text).length, content: bytesToBase64(textBytes(text)), created_at: daysAgo(age + 1), updated_at: daysAgo(age) });
     return {
       session: null,
       nextUserId: 6,
       nextProjectId: 10,
+      nextFileId: 4,
       users: [
         user(1, 'Maya Okafor', 'admin@red.demo', 'admin-demo', 'admin', 120),
         user(2, 'Sam Carter', 'user@red.demo', 'user-demo', 'user', 64),
@@ -53,6 +66,11 @@
         project(8, 4, 'Supplier portal', 'planning', '', 12),
         project(9, 5, 'Office move checklist', 'done', '', 30),
       ],
+      files: [
+        file(1, 1, 'onboarding-checklist.md', 'text/markdown', '# First week checklist\n\n- Invite the team\n- Create the first project\n- Upload the kickoff notes\n', 1),
+        file(2, 1, 'kickoff-notes.txt', 'text/plain', 'Kickoff, 2 September\nGoal: new customers reach their first project on day one.\n', 3),
+        file(3, 2, 'plan-usage.csv', 'text/csv', 'plan,accounts,avg_projects\nStarter,412,3.1\nTeam,138,9.4\nBusiness,27,21.7\n', 4),
+      ],
     };
   }
 
@@ -62,8 +80,18 @@
   } catch {
     db = seed();
   }
+  // Demo data saved before files existed has no file list yet.
+  db.files = db.files || [];
+  db.nextFileId = db.nextFileId || 1;
+
+  // Returns false only when storage is full. Blocked storage is ignored: the demo still works for this page view.
   const save = () => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); } catch { /* storage blocked: the demo still works for this page view */ }
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+    } catch (err) {
+      if (err && err.name === 'QuotaExceededError') return false;
+    }
+    return true;
   };
   save();
 
@@ -116,13 +144,49 @@
     return { name, description, status };
   }
 
-  const projectOut = ({ id, name, description, status, created_at, updated_at }) => ({ id, name, description, status, created_at, updated_at });
+  const projectOut = ({ id, name, description, status, created_at, updated_at }) =>
+    ({ id, name, description, status, created_at, updated_at, file_count: db.files.filter((f) => f.project_id === id).length });
+  const fileOut = ({ id, name, type, size, created_at, updated_at }) => ({ id, name, type, size, created_at, updated_at });
   const findOwnProject = (id, user) => db.projects.find((project) => project.id === id && project.owner_id === user.id);
   const findUser = (id) => db.users.find((user) => user.id === id) || fail(404, 'User not found.');
 
-  function handle(method, pathname, body) {
-    const id = Number((pathname.match(/\/(\d{1,15})(?:\/|$)/) || [])[1]);
-    const routeKey = `${method} ${pathname.replace(/\/\d{1,15}(?=\/|$)/, '/:id')}`;
+  // ---- files, with the same rules as the server ---------------------------------------------
+
+  function cleanFileName(value) {
+    const name = (typeof value === 'string' ? value : '')
+      .split(/[\\/]/)
+      .pop()
+      .replace(/[\u0000-\u001f\u007f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!name || name === '.' || name === '..') fail(400, 'Give the file a name.');
+    if (name.length > 255) fail(400, 'File names can be up to 255 characters.');
+    return name;
+  }
+
+  function fileNameFromHeader(value) {
+    let decoded;
+    try { decoded = decodeURIComponent(String(value ?? '')); } catch { fail(400, 'The file name could not be read.'); }
+    return cleanFileName(decoded);
+  }
+
+  const fileType = (value) => {
+    const type = String(value ?? '').trim().toLowerCase();
+    return type.length <= 100 && /^[a-z0-9][\w!#$&^.+-]*\/[a-z0-9][\w!#$&^.+-]*$/.test(type) ? type : 'application/octet-stream';
+  };
+  const requireOwnProject = (projectId) => findOwnProject(projectId, requireUser()) || fail(404, 'Project not found.');
+  const findFile = (project, fileId) => db.files.find((f) => f.id === fileId && f.project_id === project.id) || fail(404, 'File not found.');
+  const nameTaken = (project, name, exceptId) =>
+    db.files.some((f) => f.project_id === project.id && f.id !== exceptId && f.name.toLowerCase() === name.toLowerCase());
+  const duplicateName = (name) => fail(409, `A file named "${name}" is already in this project. Rename one of them, or replace the existing file.`);
+  const checkSize = (bytes) => {
+    if (bytes.length > DEMO_MAX_FILE_BYTES) fail(413, 'Files can be up to 1 MB in the demo, which keeps them in this browser.');
+  };
+
+  function handle(method, pathname, body, request) {
+    // Numeric path segments become ":id" in the route key; the first is `id`, the second (a file) is `subId`.
+    const [id, subId] = [...pathname.matchAll(/\/(\d{1,15})(?=\/|$)/g)].map((match) => Number(match[1]));
+    const routeKey = `${method} ${pathname.replace(/\/\d{1,15}(?=\/|$)/g, '/:id')}`;
 
     switch (routeKey) {
       case 'POST /api/signup': {
@@ -175,6 +239,55 @@
         const user = requireUser();
         const project = findOwnProject(id, user) || fail(404, 'Project not found.');
         db.projects = db.projects.filter((p) => p !== project);
+        db.files = db.files.filter((f) => f.project_id !== project.id);
+        return [204, null];
+      }
+
+      case 'GET /api/projects/:id/files': {
+        const project = requireOwnProject(id);
+        const files = db.files
+          .filter((f) => f.project_id === project.id)
+          .sort((a, b) => b.updated_at.localeCompare(a.updated_at) || b.id - a.id);
+        return [200, { files: files.map(fileOut), maxFileBytes: DEMO_MAX_FILE_BYTES }];
+      }
+      case 'POST /api/projects/:id/files': {
+        const project = requireOwnProject(id);
+        const name = fileNameFromHeader(request.headers['x-file-name']);
+        if (nameTaken(project, name)) duplicateName(name);
+        const bytes = request.bytes || new Uint8Array();
+        checkSize(bytes);
+        const saved = { id: db.nextFileId++, project_id: project.id, name, type: fileType(request.headers['x-file-type']), size: bytes.length, content: bytesToBase64(bytes), created_at: now(), updated_at: now() };
+        db.files.push(saved);
+        project.updated_at = now();
+        return [201, { file: fileOut(saved) }];
+      }
+      case 'GET /api/projects/:id/files/:id/download': {
+        const file = findFile(requireOwnProject(id), subId);
+        return [200, null, base64ToBytes(file.content)];
+      }
+      case 'PATCH /api/projects/:id/files/:id': {
+        const project = requireOwnProject(id);
+        const file = findFile(project, subId);
+        const name = cleanFileName(body.name);
+        if (nameTaken(project, name, file.id)) duplicateName(name);
+        Object.assign(file, { name, updated_at: now() });
+        project.updated_at = now();
+        return [200, { file: fileOut(file) }];
+      }
+      case 'PUT /api/projects/:id/files/:id/content': {
+        const project = requireOwnProject(id);
+        const file = findFile(project, subId);
+        const bytes = request.bytes || new Uint8Array();
+        checkSize(bytes);
+        Object.assign(file, { type: fileType(request.headers['x-file-type']), size: bytes.length, content: bytesToBase64(bytes), updated_at: now() });
+        project.updated_at = now();
+        return [200, { file: fileOut(file) }];
+      }
+      case 'DELETE /api/projects/:id/files/:id': {
+        const project = requireOwnProject(id);
+        const file = findFile(project, subId);
+        db.files = db.files.filter((f) => f !== file);
+        project.updated_at = now();
         return [204, null];
       }
 
@@ -214,6 +327,8 @@
         if (id === admin.id) fail(400, "You can't delete your own account. Ask another admin.");
         findUser(id);
         db.users = db.users.filter((user) => user.id !== id);
+        const removedProjects = new Set(db.projects.filter((project) => project.owner_id === id).map((project) => project.id));
+        db.files = db.files.filter((f) => !removedProjects.has(f.project_id));
         db.projects = db.projects.filter((project) => project.owner_id !== id);
         return [204, null];
       }
@@ -228,15 +343,34 @@
     const url = typeof input === 'string' ? input : input.url;
     if (!url.startsWith('/api/')) return realFetch(input, init);
 
+    const method = (init.method || 'GET').toUpperCase();
+    const headers = {};
+    for (const [key, value] of Object.entries(init.headers instanceof Headers ? Object.fromEntries(init.headers) : init.headers || {})) {
+      headers[key.toLowerCase()] = String(value);
+    }
+
+    // JSON writes arrive as strings; uploads arrive as a File or Blob.
     let body = {};
-    try { body = init.body ? JSON.parse(init.body) : {}; } catch { body = {}; }
+    let bytes = null;
+    if (typeof init.body === 'string') {
+      try { body = JSON.parse(init.body); } catch { body = {}; }
+    } else if (init.body instanceof Blob) {
+      bytes = new Uint8Array(await init.body.arrayBuffer());
+    } else if (init.body instanceof ArrayBuffer || ArrayBuffer.isView(init.body)) {
+      bytes = new Uint8Array(init.body.buffer || init.body, init.body.byteOffset || 0, init.body.byteLength);
+    }
     await new Promise((resolve) => setTimeout(resolve, 90)); // enough delay for loading states to appear, as they would live
 
     const json = (status, data) =>
       new Response(data == null ? null : JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
+    const snapshot = method === 'GET' ? null : JSON.stringify(db);
     try {
-      const [status, data] = handle((init.method || 'GET').toUpperCase(), url.split('?')[0], body);
-      save();
+      const [status, data, raw] = handle(method, url.split('?')[0], body, { headers, bytes });
+      if (snapshot && !save()) {
+        db = JSON.parse(snapshot); // storage is full: undo this change rather than keep data that won't survive a reload
+        return json(507, { error: "This browser's storage for the demo is full. Delete a file, or use Reset demo." });
+      }
+      if (raw) return new Response(raw, { status, headers: { 'Content-Type': 'application/octet-stream' } });
       return json(status, data);
     } catch (err) {
       if (!err || typeof err.status !== 'number') throw err;
