@@ -134,6 +134,11 @@ with them, the devices they are signed in on, their activity and their risk tren
   someone holds Secret files without learning what they are.
 - **Looking is recorded.** Opening someone's record goes in the activity log, at most
   once every ten minutes per viewer and person, so leaving the page open doesn't flood it.
+- **A live console sits underneath.** The security activity log streams into a terminal-style
+  view as events are written. It only reads: `filter`, `level`, `pause`, `clear` and the other
+  commands (`help` lists them) change what the view shows, and nothing typed there is sent to
+  the server. There is deliberately no shell - a dashboard holding everyone's risk record is the
+  last place to put one.
 
 ---
 
@@ -504,7 +509,7 @@ src/
                          projects.js, files.js (files, sharing, access), admin.js (people, roles,
                          activity), crimguard.js (the dashboard's data), telemetry.js (collector,
                          risk console, HR context), step-up.js (the OTP step-up), egress.js
-                         (shadow AI), decoys.js (decoy projects),
+                         (shadow AI), events.js (the live console), decoys.js (decoy projects),
                          pages.js (HTML, static, health), crawl.js (robots, sitemap, llms.txt)
   security/              access.js (roles, clearance, who may change access),
                          session-gate.js (freeze and both step-ups, and what stays open during them),
@@ -530,7 +535,7 @@ database/
   crimguard/             PostgreSQL schema for the CrimGuard detection platform
 crimguard/risk/          the scoring formula (see its own README)
 public/                  pages, 404.html, and static/: app.js, crimguard.js (the dashboard),
-                         telemetry.js (the collector),
+                         event-console.js (its live console), telemetry.js (the collector),
                          risk-panel.js, risk-console.js, identity-console.js, step-up.js,
                          biometrics.js, shared-files.js, styles.css, icons
 test/                    node --test suites, one per area, plus crimguard/ for the risk engine
@@ -574,6 +579,7 @@ docker-compose.yml       one-command self-hosting with a data volume
 | `PATCH /api/admin/users/:id/password`  | the same; signs that account out everywhere |
 | `DELETE /api/admin/users/:id`          | the same |
 | `GET /api/admin/audit?limit&before`    | admin or CEO, newest first |
+| `GET /api/admin/events?after`          | admin or CEO, the same log oldest first from a cursor, for the live console |
 | `GET /api/admin/access-requests?status` | admin or CEO, the queue plus who is leaving |
 | `POST /api/admin/access-requests/:id/decision` `{decision, note}` | admin or CEO, files up to their clearance; approve or deny |
 | `GET /api/crimguard/overview`          | admin or CEO, everyone with their counts, presence and score |

@@ -12,6 +12,7 @@ const { registerTelemetryRoutes } = require('./telemetry');
 const { registerCrimGuardRoutes } = require('./crimguard');
 const { registerStepUpRoutes } = require('./step-up');
 const { registerEgressRoutes } = require('./egress');
+const { registerEventRoutes } = require('./events');
 
 function registerRoutes(router, deps) {
   registerAuthRoutes(router, deps);
@@ -22,6 +23,7 @@ function registerRoutes(router, deps) {
   registerTelemetryRoutes(router, deps);
   registerStepUpRoutes(router, deps);
   registerEgressRoutes(router, deps);
+  registerEventRoutes(router, deps);
   // Identity throttle, biometrics and honeytrapping (src/protection/).
   deps.protection.register(router, deps);
   registerCrimGuardRoutes(router, deps);

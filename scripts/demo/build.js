@@ -30,7 +30,7 @@ const PAGE_LINKS = [
 const SERVER_ONLY_PAGES = new Set(['risk.html', 'crimguard.html']);
 const SERVER_ONLY_SCRIPTS = [
   'telemetry.js', 'risk-panel.js', 'risk-console.js', 'crimguard.js',
-  'biometrics.js', 'shared-files.js', 'step-up.js', 'identity-console.js',
+  'biometrics.js', 'shared-files.js', 'step-up.js', 'identity-console.js', 'event-console.js',
 ];
 
 function toStatic(html) {

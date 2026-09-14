@@ -13,6 +13,13 @@ function createAuditLog(db) {
       WHERE (? IS NULL OR id < ?)
       ORDER BY id DESC
       LIMIT ?`),
+    // Newer than a cursor, oldest first: what a live view appends.
+    after: db.prepare(`
+      SELECT id, occurred_at, action, actor_id, actor_email, target_user_id, target_email, ip, details
+      FROM audit_log
+      WHERE id > ?
+      ORDER BY id
+      LIMIT ?`),
     purge: db.prepare(`DELETE FROM audit_log WHERE occurred_at < datetime('now', ?)`),
   };
 
@@ -31,9 +38,17 @@ function createAuditLog(db) {
     return q.list.all(before, before, limit).map((row) => ({ ...row, details: JSON.parse(row.details) }));
   }
 
+  const parse = (row) => ({ ...row, details: JSON.parse(row.details) });
+
+  // Events after `after`, oldest first. Without a cursor, the latest `limit` events, still oldest first.
+  function tail({ after = null, limit = 100 } = {}) {
+    if (after === null) return list({ limit }).reverse();
+    return q.after.all(after, limit).map(parse);
+  }
+
   const purge = (days = RETENTION_DAYS) => { q.purge.run(`-${days} days`); };
 
-  return { record, list, purge };
+  return { record, list, tail, purge };
 }
 
 module.exports = { createAuditLog };
