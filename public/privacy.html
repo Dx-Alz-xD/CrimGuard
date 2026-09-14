@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>What Red records · Red</title>
+  <meta name="description" content="Exactly what the Red website records about how people use it, what it does not record, and who can see it.">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-page="privacy">
+  <header class="site-header">
+    <a class="wordmark" href="/"><span class="wordmark-mark" aria-hidden="true"></span>Red</a>
+    <nav class="site-nav" aria-label="Account">
+      <a class="btn btn-secondary" href="/login">Sign in</a>
+    </nav>
+  </header>
+
+  <main>
+    <section class="matrix" aria-labelledby="privacy-title">
+      <div class="matrix-inner">
+        <div>
+          <h2 id="privacy-title">What Red records about how you work</h2>
+          <p class="matrix-intro">
+            Red scores how each account behaves, to catch data being taken out of it. That means
+            it records things about you, and you should be able to read exactly what. Everything
+            below is visible to you about yourself, from the <strong>Risk</strong> button in the
+            bottom-left corner of any signed-in page.
+          </p>
+        </div>
+
+        <div class="table-wrap">
+          <table class="matrix-table">
+            <thead>
+              <tr><th scope="col">Recorded</th><th scope="col">Not recorded</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">How fast you type, in averages over a minute: the gap between
+                  keystrokes and how long keys are held.</th>
+                <td><strong>Which keys you press.</strong> No key identity ever leaves the page,
+                  and nothing you type is sent or stored.</td>
+              </tr>
+              <tr>
+                <th scope="row">How fast the pointer moves and how you scroll, again as averages.</th>
+                <td><strong>Where the pointer went.</strong> No positions, paths or clicks.</td>
+              </tr>
+              <tr>
+                <th scope="row">That you copied or pasted, how many characters, and whether it
+                  matched the shape of a password or an API key.</th>
+                <td><strong>What you copied.</strong> The text is checked inside the page and
+                  thrown away; only the category name ("api_key") is sent.</td>
+              </tr>
+              <tr>
+                <th scope="row">Which projects and pages you opened, when, and what you searched
+                  for in the people directory.</th>
+                <td><strong>Anyone else's projects.</strong> Projects stay private; the risk
+                  console shows admins scores, never contents.</td>
+              </tr>
+              <tr>
+                <th scope="row">Sign-ins, failures, the browser you used, and a coarse
+                  fingerprint of the device.</th>
+                <td><strong>Your precise location.</strong> Red stores the network your address
+                  belongs to and your browser's time zone, nothing finer.</td>
+              </tr>
+              <tr>
+                <th scope="row">When you print a page, take a screenshot or start screen sharing,
+                  and how many Red tabs you have open.</th>
+                <td><strong>Anything outside Red.</strong> A web page cannot see your other
+                  applications, files or devices, and this one does not try.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div>
+          <h2>Who can see it</h2>
+          <p class="matrix-intro">
+            You can see all of it about yourself. Admins can see everyone's scores and the
+            variables behind them, which is the point of the console — it is how someone taking
+            data out of Red would be noticed. Nobody, admins included, can open anyone else's
+            projects. The risk database keeps counts and timings, never the contents of your work.
+          </p>
+
+          <h2>Turning it off</h2>
+          <p class="matrix-intro">
+            Red works normally without the risk database attached: unset
+            <code>CRIMGUARD_DATABASE_URL</code> and remove <code>database/crimguard.db</code>, and
+            nothing is recorded or scored. The behaviour of every other page is identical.
+          </p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <a class="wordmark" href="/"><span class="wordmark-mark" aria-hidden="true"></span>Red</a>
+    <span>Runs on Node.js with a built-in SQLite database.</span>
+  </footer>
+</body>
+</html>

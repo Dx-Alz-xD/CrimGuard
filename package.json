@@ -12,7 +12,8 @@
     "test": "node --test \"test/**/*.test.js\"",
     "build:demo": "node scripts/demo/build.js",
     "db:status": "node --env-file-if-exists=.env scripts/db/status.js",
-    "db:sqlite": "node --env-file-if-exists=.env scripts/db/build-sqlite.js"
+    "db:sqlite": "node --env-file-if-exists=.env scripts/db/build-sqlite.js",
+    "db:seed-risk": "node --env-file-if-exists=.env scripts/db/seed-risk.js"
   },
   "optionalDependencies": {
     "pg": "^8.23.0"

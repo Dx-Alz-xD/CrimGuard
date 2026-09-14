@@ -730,6 +730,10 @@
         if (name === 'activity') activitySection.load();
       });
     },
+    // The risk console shares the signed-in shell; its own table lives in risk-console.js.
+    async risk() {
+      await initShell();
+    },
   };
 
   initReveal();

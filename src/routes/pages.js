@@ -16,7 +16,12 @@ const PAGES = {
   '/signup': 'signup.html',
   '/dashboard': 'dashboard.html',
   '/admin': 'admin.html',
+  '/admin/risk': 'risk.html',
+  '/privacy': 'privacy.html',
 };
+
+// Pages that are the admin console, and so count as admin_panel_access.
+const ADMIN_PAGES = new Set(['/admin', '/admin/risk']);
 
 const NOT_FOUND_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark">
@@ -40,6 +45,7 @@ function pageRedirect(pathname, user) {
       if (!user) return '/login';
       return user.role === 'admin' ? '/admin' : null;
     case '/admin':
+    case '/admin/risk':
       if (!user) return '/admin/login';
       return user.role === 'admin' ? null : '/dashboard';
     default:
@@ -48,10 +54,10 @@ function pageRedirect(pathname, user) {
 }
 
 // Handles GET and HEAD for everything outside /api/. Returns false if the path isn't ours.
-function createPageHandler({ db, sessions }) {
+function createPageHandler({ db, sessions, telemetry }) {
   const ping = db.prepare('SELECT 1');
 
-  return async function handlePage(req, res, pathname) {
+  return async function handlePage(req, res, pathname, client = {}) {
     if (pathname === '/healthz') {
       ping.get(); // throws, and so returns 500, if the database is unusable
       return sendJson(res, 200, { ok: true });
@@ -59,10 +65,21 @@ function createPageHandler({ db, sessions }) {
     if (pathname.startsWith('/static/')) return serveStatic(res, STATIC_DIR, pathname.slice('/static/'.length));
     if (!Object.hasOwn(PAGES, pathname)) return sendHtml(res, 404, NOT_FOUND_HTML);
 
-    const target = pageRedirect(pathname, sessions.current(req));
+    const user = sessions.current(req);
+    const target = pageRedirect(pathname, user);
     if (target) return redirect(res, target);
+
+    if (user) {
+      telemetry.onAccess({
+        user, tokenHash: req.sessionTokenHash, client, kind: 'page', id: pathname.slice(1) || 'home',
+        name: pathname, action: 'read',
+      });
+      if (ADMIN_PAGES.has(pathname)) {
+        telemetry.onPrivilege({ actor: user, tokenHash: req.sessionTokenHash, client, type: 'admin_panel_access', systemName: pathname });
+      }
+    }
     return sendHtml(res, 200, await fs.readFile(path.join(PUBLIC_DIR, PAGES[pathname])));
   };
 }
 
-module.exports = { PAGES, PUBLIC_DIR, createPageHandler, pageRedirect };
+module.exports = { PAGES, ADMIN_PAGES, PUBLIC_DIR, createPageHandler, pageRedirect };

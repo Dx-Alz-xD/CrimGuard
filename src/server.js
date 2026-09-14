@@ -53,7 +53,9 @@ async function main() {
   });
   if (crimguard) console.log(`CrimGuard risk database: ${describeConnection(crimguard)}`);
 
-  const server = createApp({ db, pepper: config.pepper, secureCookies: config.secureCookies, trustProxy: config.trustProxy });
+  const server = createApp({
+    db, crimguard, pepper: config.pepper, secureCookies: config.secureCookies, trustProxy: config.trustProxy,
+  });
   server.listen(config.port, config.host, () => {
     console.log(`Red is running at http://localhost:${server.address().port}`);
   });

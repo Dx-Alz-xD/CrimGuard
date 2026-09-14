@@ -833,3 +833,241 @@ select {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; animation: none !important; }
 }
+
+/* ---- live risk panel ------------------------------------------------------------ */
+
+.risk-launcher {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 14px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  box-shadow: var(--shadow-float);
+  cursor: pointer;
+}
+.risk-launcher:hover { background: var(--hover); }
+.risk-launcher-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--idle); }
+.risk-launcher[data-level="low"] .risk-launcher-dot { background: var(--ok); }
+.risk-launcher[data-level="medium"] .risk-launcher-dot { background: var(--warn); }
+.risk-launcher[data-level="high"] .risk-launcher-dot,
+.risk-launcher[data-level="critical"] .risk-launcher-dot { background: var(--red); }
+.risk-launcher[data-level="critical"] { border-color: var(--red); color: var(--red-text); }
+.risk-launcher-score { font-variant-numeric: tabular-nums; color: var(--slate); }
+.risk-launcher-score:empty { display: none; }
+
+.risk-panel {
+  position: fixed;
+  z-index: 61;
+  display: flex;
+  flex-direction: column;
+  width: min(380px, calc(100vw - 24px));
+  max-height: min(82vh, 680px);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+}
+.risk-panel.is-dragging { user-select: none; }
+
+.risk-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  padding: 10px 10px 10px 12px;
+  background: var(--canvas);
+  border-bottom: 1px solid var(--line);
+  cursor: grab;
+  touch-action: none;
+}
+.risk-panel.is-dragging .risk-header { cursor: grabbing; }
+.risk-grip {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  background-image: radial-gradient(circle, var(--line-strong) 1.1px, transparent 1.2px);
+  background-size: 4px 4px;
+}
+.risk-title { flex: 1; font-size: 13px; font-weight: 650; }
+.risk-close {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--slate);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.risk-close:hover { color: var(--ink); background: var(--hover); }
+
+.risk-score { flex: none; padding: 14px 14px 12px; border-bottom: 1px solid var(--line); }
+.risk-score-main { display: flex; align-items: baseline; gap: 10px; }
+.risk-scored-age { margin-left: auto; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--idle); white-space: nowrap; }
+.risk-score-value {
+  font-size: 34px;
+  font-weight: 700;
+  font-stretch: 108%;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+.risk-score-level { text-transform: capitalize; }
+.risk-score-meta { margin-top: 6px; font-size: 12px; color: var(--slate); text-wrap: pretty; }
+
+.risk-controls {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px 8px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.risk-toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; line-height: 1.2; color: var(--slate); cursor: pointer; }
+/* Without a size of its own the checkbox stretches to the flex line. */
+.risk-toggle input { flex: none; width: 13px; height: 13px; margin: 0; accent-color: var(--red); }
+
+.risk-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.risk-list { display: contents; }
+.risk-none { padding: 28px 14px; font-size: 13px; color: var(--slate); text-align: center; }
+
+.risk-group + .risk-group { border-top: 1px solid var(--line); }
+.risk-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  background: var(--canvas);
+}
+.risk-group-head h3 { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--slate); }
+
+.risk-rows { padding: 0; margin: 0; list-style: none; }
+.risk-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 14px;
+  font-size: 12.5px;
+}
+/* With a baseline there are four columns; the baseline is allowed to collapse first. */
+.risk-row:has(.risk-usual) { grid-template-columns: minmax(0, 1fr) auto minmax(0, auto) auto; }
+.risk-usual {
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--idle);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.risk-row + .risk-row { border-top: 1px solid color-mix(in srgb, var(--line) 55%, transparent); }
+.risk-row.is-flagged { background: var(--red-wash); }
+.risk-key { min-width: 0; overflow-wrap: anywhere; }
+.risk-row.is-empty .risk-key { color: var(--slate); }
+.risk-value { font-variant-numeric: tabular-nums; font-weight: 600; text-align: right; }
+.risk-row.is-empty .risk-value { font-weight: 400; color: var(--idle); }
+
+.risk-tag {
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--slate);
+  background: var(--hover);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.risk-tag-measured { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.risk-tag-derived { color: var(--warn); background: color-mix(in srgb, var(--warn) 14%, transparent); }
+.risk-points {
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--on-red);
+  background: var(--red);
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.risk-coverage { flex: none; padding: 8px 14px; font-size: 11px; color: var(--slate); border-top: 1px solid var(--line); }
+
+@media (max-width: 560px) {
+  .risk-panel { width: calc(100vw - 24px); max-height: 68vh; }
+  .risk-launcher { left: 12px; bottom: 12px; }
+}
+
+/* ---- live capture ---------------------------------------------------------------- */
+
+/* One compact band above the variable list, so watching the capture never costs the view
+   of what the capture is feeding. */
+.risk-live { flex: none; padding: 9px 14px 10px; background: var(--canvas); border-bottom: 1px solid var(--line); }
+.risk-live-head { display: flex; align-items: center; gap: 8px; }
+.risk-live-title { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--slate); }
+.risk-live-next { flex: 1; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--idle); text-align: right; }
+.risk-live-head .btn { flex: none; }
+
+.risk-chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+.risk-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 2px 7px;
+  font-size: 11px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.risk-chip-label { color: var(--slate); }
+.risk-chip-value { font-weight: 650; font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; }
+
+/* A slow pulse, so it reads as running rather than as an alert. */
+.risk-pulse {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--ok);
+  animation: risk-pulse 1.8s ease-in-out infinite;
+}
+@keyframes risk-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+  50% { opacity: 0.65; box-shadow: 0 0 0 4px color-mix(in srgb, var(--ok) 0%, transparent); }
+}
+
+/* The score flashes when it actually changes, so a rescore is visible. */
+.risk-score-value.is-changed { animation: risk-score-change 900ms ease-out; }
+.risk-score-value[data-direction="down"].is-changed { animation-name: risk-score-down; }
+@keyframes risk-score-change {
+  0% { color: var(--red-text); transform: translateY(-2px); }
+  100% { color: inherit; transform: none; }
+}
+@keyframes risk-score-down {
+  0% { color: var(--ok); transform: translateY(2px); }
+  100% { color: inherit; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .risk-pulse { animation: none; }
+  .risk-score-value.is-changed { animation: none; }
+}

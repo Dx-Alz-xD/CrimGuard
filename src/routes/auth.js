@@ -34,7 +34,7 @@ async function createAccount({ users, passwords }, body, { role, mustChangePassw
 }
 
 function registerAuthRoutes(router, deps) {
-  const { stores, sessions, passwords, throttle, limits } = deps;
+  const { stores, sessions, passwords, throttle, limits, telemetry } = deps;
   const { users, audit } = stores;
 
   router.post('/api/signup', async ({ req, res, client }) => {
@@ -45,8 +45,9 @@ function registerAuthRoutes(router, deps) {
     throttle.fail(ipKey, limits.signupPerIp);
 
     const user = await createAccount({ users, passwords }, await readJson(req), { role: 'user' });
-    sessions.start(req, res, user);
+    const tokenHash = sessions.start(req, res, user);
     audit.record('account.signup', { actor: user, target: user, ...client });
+    telemetry.onLogin({ user, client, tokenHash });
     sendJson(res, 201, { user, redirect: homeFor(user) });
   });
 
@@ -68,6 +69,7 @@ function registerAuthRoutes(router, deps) {
       const blocked = Math.max(emailKey ? throttle.fail(emailKey, limits.loginPerEmail) : 0, throttle.fail(ipKey, limits.loginPerIp));
       // Unknown emails aren't logged: people sometimes type a password into the email field.
       audit.record('login.failed', { target: row ? { id: row.id, email: row.email } : null, ...client, details: { portal, blocked: blocked > 0 } });
+      telemetry.onLoginFailure({ userId: row ? row.id : null, client });
       throw new HttpError(401, 'Incorrect email or password.');
     }
 
@@ -81,17 +83,22 @@ function registerAuthRoutes(router, deps) {
     if (needsRehash) users.upgradeHash(row.id, await passwords.hash(password), row.password_hash);
     if (emailKey) throttle.reset(emailKey);
     users.recordLogin(row.id);
-    sessions.start(req, res, row);
+    const tokenHash = sessions.start(req, res, row);
     audit.record('login.succeeded', { actor: row, target: row, ...client, details: { portal, upgradedHash: needsRehash } });
+    telemetry.onLogin({ user: publicUser(row), client, tokenHash });
 
     sendJson(res, 200, { user: publicUser(row), redirect: homeFor(row), mustChangePassword: row.must_change_password === 1 });
   });
 
   router.post('/api/logout', async ({ req, res, client }) => {
     const user = sessions.current(req);
+    const tokenHash = req.sessionTokenHash;
     sessions.end(req);
     sessions.clearCookie(req, res);
-    if (user) audit.record('logout', { actor: user, target: user, ...client });
+    if (user) {
+      audit.record('logout', { actor: user, target: user, ...client });
+      telemetry.onLogout({ user, tokenHash, client });
+    }
     sendJson(res, 200, { redirect: '/' });
   });
 
@@ -121,10 +128,13 @@ function registerAuthRoutes(router, deps) {
 
     users.setPassword(user.id, await passwords.hash(newValue), { mustChange: false });
     throttle.reset(key);
+    telemetry.onPasswordChanged({ user, client, tokenHash: req.sessionTokenHash });
     // A fresh token for this device, and every other device signed out.
-    sessions.start(req, res, user);
+    const tokenHash = sessions.start(req, res, user);
     sessions.endOthers(req, user.id);
     audit.record('password.changed', { actor: user, target: user, ...client });
+    // The old session is gone, so the new token is what later telemetry belongs to.
+    telemetry.onLogin({ user, client, tokenHash });
     sendJson(res, 200, { ok: true });
   });
 }

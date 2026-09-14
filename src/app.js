@@ -15,9 +15,13 @@ const { registerAuthRoutes } = require('./routes/auth');
 const { registerProfileRoutes } = require('./routes/profile');
 const { registerProjectRoutes } = require('./routes/projects');
 const { registerAdminRoutes } = require('./routes/admin');
+const { registerTelemetryRoutes } = require('./routes/telemetry');
 const { createPageHandler } = require('./routes/pages');
+const { createTelemetry } = require('./telemetry');
 
 const HOUSEKEEPING_INTERVAL_MS = 60 * 60 * 1000;
+// Often enough that the risk console shows today as it happens, cheap enough to leave running.
+const RISK_INTERVAL_MS = 15 * 60 * 1000;
 
 // State-changing API calls must come from our own pages.
 //  - They must be JSON. A cross-site page can't send application/json without a CORS preflight,
@@ -46,24 +50,30 @@ function assertSameOrigin(req, { trustProxy }) {
 function createApp({
   db,
   pepper,
+  crimguard = null,
   secureCookies = false,
   trustProxy = false,
   rateLimits = RATE_LIMITS,
   sessionPolicy = SESSION_POLICY,
+  riskInterval = RISK_INTERVAL_MS,
   now = Date.now,
 }) {
   const stores = createStores(db);
   const passwords = createPasswordHasher({ pepper });
   const throttle = createThrottle(db, { now });
   const sessions = createSessionManager({ sessions: stores.sessions, policy: sessionPolicy, secureCookies, now });
-  const deps = { stores, sessions, passwords, throttle, limits: rateLimits };
+  // Behavioural telemetry into the CrimGuard risk database. Without that database this is a
+  // no-op object, so every route below behaves the same whether or not it is connected.
+  const telemetry = createTelemetry(crimguard);
+  const deps = { stores, sessions, passwords, throttle, limits: rateLimits, telemetry, crimguard };
 
   const router = createRouter();
   registerAuthRoutes(router, deps);
   registerProfileRoutes(router, deps);
   registerProjectRoutes(router, deps);
   registerAdminRoutes(router, deps);
-  const handlePage = createPageHandler({ db, sessions });
+  registerTelemetryRoutes(router, deps);
+  const handlePage = createPageHandler({ db, sessions, telemetry });
 
   async function route(req, res) {
     applySecurityHeaders(res, { https: isHttps(req) });
@@ -77,9 +87,11 @@ function createApp({
     const pathname = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, '') : url.pathname;
     const { method } = req;
 
+    const client = { ip: clientIp(req, { trustProxy }), userAgent: userAgent(req) };
+
     if (!pathname.startsWith('/api/')) {
       if (method !== 'GET' && method !== 'HEAD') throw new HttpError(405, 'Method not allowed.', { headers: { Allow: 'GET, HEAD' } });
-      return handlePage(req, res, pathname);
+      return handlePage(req, res, pathname, client);
     }
 
     if (method !== 'GET' && method !== 'HEAD') assertSameOrigin(req, { trustProxy });
@@ -87,7 +99,6 @@ function createApp({
     if (!found) throw new HttpError(404, 'Not found.');
     if (found.allowed) throw new HttpError(405, 'Method not allowed.', { headers: { Allow: found.allowed.join(', ') } });
 
-    const client = { ip: clientIp(req, { trustProxy }), userAgent: userAgent(req) };
     return found.handler({ req, res, url, params: found.params, client });
   }
 
@@ -101,10 +112,43 @@ function createApp({
     }
   }
 
+  // A refusal is a risk signal in its own right: it is the only trace Red keeps of someone
+  // reaching for something their role doesn't cover, and of a session cookie outliving its
+  // session. Both are recorded here rather than in each route.
+  function recordRefusal(req, status, client) {
+    try {
+      if (status === 403 && req.url.startsWith('/api/admin/')) {
+        const user = sessions.current(req);
+        if (user) telemetry.onViolation({ user, tokenHash: req.sessionTokenHash, client, path: new URL(req.url, 'http://red.local').pathname });
+      } else if (status === 401) {
+        const stale = sessions.staleTokenHash(req);
+        if (stale) telemetry.onStaleSession({ tokenHash: stale, client });
+      }
+    } catch { /* telemetry must never turn one failed request into two */ }
+  }
+
   const server = http.createServer((req, res) => {
+    // Bytes served to this account, which is what bandwidth_usage_spike compares to a baseline.
+    let bytes = 0;
+    const { write, end } = res;
+    res.write = function countingWrite(chunk, ...rest) {
+      if (chunk) bytes += Buffer.byteLength(chunk, typeof rest[0] === 'string' ? rest[0] : undefined);
+      return write.call(this, chunk, ...rest);
+    };
+    res.end = function countingEnd(chunk, ...rest) {
+      if (chunk && typeof chunk !== 'function') bytes += Buffer.byteLength(chunk, typeof rest[0] === 'string' ? rest[0] : undefined);
+      return end.call(this, chunk, ...rest);
+    };
+    res.once('finish', () => {
+      if (bytes > 0 && req.sessionUser) {
+        telemetry.onBandwidth({ user: req.sessionUser, tokenHash: req.sessionTokenHash, client: { ip: clientIp(req, { trustProxy }) }, bytes });
+      }
+    });
+
     route(req, res).catch((err) => {
       const status = err instanceof HttpError ? err.status : 500;
       if (status === 500) console.error(err);
+      recordRefusal(req, status, { ip: clientIp(req, { trustProxy }), userAgent: userAgent(req) });
       if (res.headersSent) return res.destroy();
       const body = { error: status === 500 ? 'Something went wrong.' : err.message };
       if (err.code && status !== 500) body.code = err.code;
@@ -120,7 +164,32 @@ function createApp({
   housekeeping();
   const timer = setInterval(housekeeping, HOUSEKEEPING_INTERVAL_MS);
   timer.unref();
-  server.on('close', () => clearInterval(timer));
+
+  // Aggregate and score today, and yesterday too, so a day that ended while the server was
+  // down still gets its snapshot once it comes back.
+  let running = false;
+  async function runRisk() {
+    if (running || !crimguard) return;
+    running = true;
+    try {
+      await telemetry.flush();
+      const day = new Date();
+      await telemetry.runDay(day.toISOString().slice(0, 10));
+      await telemetry.runDay(new Date(day.getTime() - 86400000).toISOString().slice(0, 10));
+    } catch (err) {
+      console.error('Risk scoring failed:', err.message);
+    } finally {
+      running = false;
+    }
+  }
+  const riskTimer = crimguard && riskInterval > 0 ? setInterval(runRisk, riskInterval) : null;
+  riskTimer?.unref();
+
+  server.on('close', () => {
+    clearInterval(timer);
+    if (riskTimer) clearInterval(riskTimer);
+  });
+  server.telemetry = telemetry;
 
   return server;
 }

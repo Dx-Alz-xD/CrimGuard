@@ -15,6 +15,8 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY src ./src
 COPY public ./public
+# src/telemetry/scoring.js runs this, and it reads the feature catalog out of database/crimguard.
+COPY crimguard ./crimguard
 COPY database/web ./database/web
 COPY database/crimguard ./database/crimguard
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
