@@ -6,10 +6,11 @@ const { HttpError } = require('../http/errors');
 const { readJson } = require('../http/request');
 const { sendJson } = require('../http/response');
 const { DuplicateEmailError } = require('../db/users');
+const { SIGNUP_ROLE, isPrivileged } = require('../security/access');
 const { normalizeEmail, personName, requiredEmail, newPassword } = require('../validation');
 
-const homeFor = (user) => (user.role === 'admin' ? '/admin' : '/dashboard');
-const publicUser = ({ id, name, email, role }) => ({ id, name, email, role });
+const homeFor = (user) => (isPrivileged(user.role) ? '/admin' : '/dashboard');
+const publicUser = ({ id, name, email, role, clearance }) => ({ id, name, email, role, clearance });
 
 function tooManyAttempts(seconds, what = 'attempts') {
   const minutes = Math.max(1, Math.ceil(seconds / 60));
@@ -44,7 +45,7 @@ function registerAuthRoutes(router, deps) {
     // Every attempt counts here, not just failures, to slow down mass account creation.
     throttle.fail(ipKey, limits.signupPerIp);
 
-    const user = await createAccount({ users, passwords }, await readJson(req), { role: 'user' });
+    const user = await createAccount({ users, passwords }, await readJson(req), { role: SIGNUP_ROLE });
     const tokenHash = sessions.start(req, res, user);
     audit.record('account.signup', { actor: user, target: user, ...client });
     telemetry.onLogin({ user, client, tokenHash });
@@ -73,11 +74,12 @@ function registerAuthRoutes(router, deps) {
       throw new HttpError(401, 'Incorrect email or password.');
     }
 
-    if (portal === 'admin' && row.role !== 'admin') {
+    // Admins and the CEO use the admin console; everyone else uses the user login.
+    if (portal === 'admin' && !isPrivileged(row.role)) {
       throw new HttpError(403, "This account doesn't have admin access. Use the user login.");
     }
-    if (portal === 'user' && row.role === 'admin') {
-      throw new HttpError(403, 'This is an admin account. Use the admin login.');
+    if (portal === 'user' && isPrivileged(row.role)) {
+      throw new HttpError(403, `This is ${row.role === 'ceo' ? 'the CEO account' : 'an admin account'}. Use the admin login.`);
     }
 
     // A frozen account waits for an admin to restore it (src/identity/), password or not.

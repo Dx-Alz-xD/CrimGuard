@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>CrimGuard</title>
+  <meta name="description" content="Everyone with an account, what they hold and who can see it, kept up to date.">
+  <link rel="icon" href="/static/crimguard.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body class="app cg" data-page="crimguard">
+  <header class="topbar cg-topbar">
+    <a class="cg-wordmark" href="/crimguard"><span class="cg-mark" aria-hidden="true"></span>CrimGuard</a>
+    <nav class="app-nav" aria-label="Sections">
+      <a href="/crimguard" aria-current="page">People</a>
+      <a href="/admin#people">Red console</a>
+    </nav>
+    <div class="topbar-end">
+      <p class="cg-live" id="cg-live" data-state="connecting">
+        <span class="cg-pulse" aria-hidden="true"></span>
+        <span class="cg-live-text" id="cg-live-text">Connecting</span>
+      </p>
+      <span class="role-badge is-admin" id="role-badge" hidden></span>
+      <button class="account-button" id="account-button" type="button" popovertarget="account-menu">
+        <span class="avatar is-admin" id="account-avatar" aria-hidden="true"></span>
+        <span class="account-name" id="account-name"></span>
+      </button>
+    </div>
+  </header>
+
+  <div class="menu" id="account-menu" popover>
+    <div class="menu-identity">
+      <span class="menu-name" id="menu-name"></span>
+      <span class="menu-email" id="menu-email"></span>
+    </div>
+    <button class="menu-item" type="button" id="edit-profile">Profile</button>
+    <button class="menu-item" type="button" id="change-password">Change password</button>
+    <button class="menu-item" type="button" id="logout">Log out</button>
+  </div>
+
+  <main class="cg-main">
+    <section class="cg-summary" aria-labelledby="cg-title">
+      <div class="cg-heading">
+        <h1 id="cg-title">People</h1>
+        <p>Everyone with an account, what they hold and who can see it. This page keeps itself up to date while it is open.</p>
+      </div>
+      <dl class="cg-stats" id="cg-stats"></dl>
+    </section>
+
+    <div class="cg-layout">
+      <aside class="cg-roster" aria-label="Everyone">
+        <div class="cg-roster-tools">
+          <input class="search" id="cg-search" type="search" placeholder="Search by name or email" aria-label="Search people">
+          <div class="cg-roster-selects">
+            <select id="cg-filter" aria-label="Show a role">
+              <option value="all">All roles</option>
+            </select>
+            <select id="cg-sort" aria-label="Order">
+              <option value="clearance">Clearance</option>
+              <option value="active">Recently active</option>
+              <option value="risk">Risk score</option>
+              <option value="name">Name</option>
+            </select>
+          </div>
+          <p class="cg-roster-count" id="cg-roster-count"></p>
+        </div>
+        <ul class="cg-roster-list" id="cg-roster"></ul>
+      </aside>
+
+      <section class="cg-record" id="cg-record" aria-label="Record">
+        <div class="empty"><p>Loading…</p></div>
+      </section>
+    </div>
+  </main>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+  <script src="/static/app.js"></script>
+  <script src="/static/crimguard.js"></script>
+  <script src="/static/telemetry.js"></script>
+</body>
+</html>

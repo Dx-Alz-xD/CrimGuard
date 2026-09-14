@@ -18,7 +18,7 @@ test('only admins can list people, add people, assign roles, or read the activit
   const admin = await app.signInAdmin();
   const list = await admin.b('GET', '/api/admin/users');
   assert.equal(list.status, 200);
-  assert.ok(list.body.users.some((u) => u.id === user.id && u.role === 'user'));
+  assert.ok(list.body.users.some((u) => u.id === user.id && u.role === 'intern' && u.role_label === 'Intern' && u.clearance === 1));
   assert.ok(list.body.users.every((u) => !Object.keys(u).some((key) => key.includes('password'))));
 });
 
@@ -32,15 +32,18 @@ test('a role change applies to sessions that are already signed in', async () =>
   assert.equal((await patB('GET', '/api/admin/users')).status, 200);
   assert.equal((await patB('GET', '/dashboard')).location, '/admin');
 
-  await admin.b('PATCH', `/api/admin/users/${user.id}/role`, { role: 'user' });
-  assert.equal((await patB('GET', '/api/admin/users')).status, 403);
+  await admin.b('PATCH', `/api/admin/users/${user.id}/role`, { role: 'employee' });
+  const demoted = await patB('GET', '/api/admin/users');
+  assert.equal(demoted.status, 403);
+  assert.equal(demoted.body.code, 'not_privileged', 'the page can tell the console was taken away');
   assert.equal((await patB('GET', '/admin')).location, '/dashboard');
 });
 
 test("admins can't change their own role, and roles are validated", async () => {
   const admin = await app.signInAdmin();
   const { user } = await app.signUp();
-  assert.equal((await admin.b('PATCH', `/api/admin/users/${admin.user.id}/role`, { role: 'user' })).status, 400);
+  assert.equal((await admin.b('PATCH', `/api/admin/users/${admin.user.id}/role`, { role: 'employee' })).status, 400);
+  assert.equal((await admin.b('PATCH', `/api/admin/users/${user.id}/role`, { role: 'user' })).status, 400, "'user' is no longer a role");
   assert.equal((await admin.b('PATCH', `/api/admin/users/${user.id}/role`, { role: 'owner' })).status, 400);
   assert.equal((await admin.b('PATCH', '/api/admin/users/999999/role', { role: 'admin' })).status, 404);
 });
@@ -69,9 +72,9 @@ test('people added by an admin must choose their own password before doing anyth
   assert.equal((await newcomer('GET', '/api/me')).body.user.mustChangePassword, false);
   assert.equal((await newcomer('GET', '/api/admin/users')).status, 200);
 
-  assert.equal((await admin.b('POST', '/api/admin/users', { name: 'Again', email, password: PASSWORD, role: 'user' })).status, 409);
+  assert.equal((await admin.b('POST', '/api/admin/users', { name: 'Again', email, password: PASSWORD, role: 'employee' })).status, 409);
   assert.equal((await admin.b('POST', '/api/admin/users', { name: 'No role', email: app.freshEmail(), password: PASSWORD })).status, 400);
-  assert.equal((await admin.b('POST', '/api/admin/users', { name: 'Weak', email: app.freshEmail(), password: 'short', role: 'user' })).status, 400);
+  assert.equal((await admin.b('POST', '/api/admin/users', { name: 'Weak', email: app.freshEmail(), password: 'short', role: 'employee' })).status, 400);
 });
 
 test("admins can set anyone's password, which signs that person out everywhere", async () => {
@@ -141,7 +144,7 @@ test('security events are recorded in the activity log without secrets', async (
   assert.equal(status, 200);
   const mine = body.events.filter((event) => event.target_email === email);
   assert.deepEqual(new Set(mine.map((event) => event.action)), new Set(['account.signup', 'login.failed', 'admin.role_changed']));
-  assert.deepEqual(mine.find((event) => event.action === 'admin.role_changed').details, { from: 'user', to: 'admin' });
+  assert.deepEqual(mine.find((event) => event.action === 'admin.role_changed').details, { from: 'intern', to: 'admin' });
 
   const everything = JSON.stringify(app.db.prepare('SELECT * FROM audit_log').all());
   assert.ok(!everything.includes('wrong-password-99'));

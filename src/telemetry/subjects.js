@@ -8,6 +8,7 @@
 // event. The caches only ever hold ids, so nothing goes stale that matters.
 
 const crypto = require('node:crypto');
+const { isPrivileged } = require('../security/access');
 
 const ORG_NAME = 'Red';
 const ORG_URI = 'red:org';
@@ -78,7 +79,7 @@ function createSubjects(db) {
   async function forUser(user) {
     const cached = userIds.get(user.id);
     if (cached !== undefined) {
-      await db.query('UPDATE users SET is_privileged = ?, updated_at = ? WHERE id = ?', [user.role === 'admin', new Date().toISOString(), cached]);
+      await db.query('UPDATE users SET is_privileged = ?, updated_at = ? WHERE id = ?', [isPrivileged(user.role), new Date().toISOString(), cached]);
       return cached;
     }
 
@@ -88,7 +89,7 @@ function createSubjects(db) {
       table: 'users',
       insert: `INSERT INTO users (org_id, email, full_name, employment_type, is_privileged, is_analyst, okta_user_id, hire_date)
                VALUES (?, ?, ?, 'full_time', ?, ?, ?, ?)`,
-      params: [org, user.email, user.name || user.email, user.role === 'admin', user.role === 'admin', externalId,
+      params: [org, user.email, user.name || user.email, isPrivileged(user.role), isPrivileged(user.role), externalId,
         (user.created_at || new Date().toISOString()).slice(0, 10)],
       where: 'org_id = ? AND okta_user_id = ?',
       whereParams: [org, externalId],
@@ -96,7 +97,7 @@ function createSubjects(db) {
 
     // Email and name can change in Red after the row was created.
     await db.query('UPDATE users SET email = ?, full_name = ?, is_privileged = ?, is_analyst = ?, updated_at = ? WHERE id = ?',
-      [user.email, user.name || user.email, user.role === 'admin', user.role === 'admin', new Date().toISOString(), id]);
+      [user.email, user.name || user.email, isPrivileged(user.role), isPrivileged(user.role), new Date().toISOString(), id]);
     userIds.set(user.id, id);
     return id;
   }

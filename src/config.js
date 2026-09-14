@@ -11,7 +11,8 @@ class ConfigError extends Error {}
 const HOUR = 60 * 60 * 1000;
 const MINUTE = 60 * 1000;
 
-// How long a session lasts. Admin sessions are shorter because they can change other people's access.
+// How long a session lasts. `admin` covers admins and the CEO: their sessions are shorter because they
+// can change other people's access. Every other role uses `user`.
 const SESSION_POLICY = Object.freeze({
   user: { idleMs: 24 * HOUR, absoluteMs: 7 * 24 * HOUR },
   admin: { idleMs: 2 * HOUR, absoluteMs: 12 * HOUR },
@@ -58,6 +59,13 @@ function loadConfig(env = process.env) {
 
   const adminPassword = env.RED_ADMIN_PASSWORD || '';
   if (adminPassword && adminPassword.length < 12) throw new ConfigError('RED_ADMIN_PASSWORD must be at least 12 characters.');
+  const ceoPassword = env.RED_CEO_PASSWORD || '';
+  if (ceoPassword && ceoPassword.length < 12) throw new ConfigError('RED_CEO_PASSWORD must be at least 12 characters.');
+  const adminEmail = (env.RED_ADMIN_EMAIL || 'admin@red.local').trim().toLowerCase();
+  const ceoEmail = (env.RED_CEO_EMAIL || 'ceo@red.local').trim().toLowerCase();
+  if (adminEmail === ceoEmail) {
+    throw new ConfigError('RED_ADMIN_EMAIL and RED_CEO_EMAIL must be different: the first admin and the CEO are separate accounts.');
+  }
 
   const maxFileMb = env.RED_MAX_FILE_MB ? Number(env.RED_MAX_FILE_MB) : null;
   if (maxFileMb !== null && !(maxFileMb > 0 && maxFileMb <= 100)) {
@@ -76,8 +84,13 @@ function loadConfig(env = process.env) {
     maxFileBytes: maxFileMb === null ? DEFAULT_MAX_FILE_BYTES : Math.round(maxFileMb * 1024 * 1024),
     admin: {
       name: env.RED_ADMIN_NAME || 'Red Admin',
-      email: (env.RED_ADMIN_EMAIL || 'admin@red.local').trim().toLowerCase(),
+      email: adminEmail,
       password: adminPassword,
+    },
+    ceo: {
+      name: env.RED_CEO_NAME || 'Red CEO',
+      email: ceoEmail,
+      password: ceoPassword,
     },
   };
 }

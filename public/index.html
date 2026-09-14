@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Red</title>
-  <meta name="description" content="Private projects for everyone on your team, and one console for admins to manage people, roles and passwords.">
+  <meta name="description" content="Projects and files for everyone on your team, roles with clearance, and control over who can open each file.">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -26,7 +26,7 @@
     <section class="hero">
       <div>
         <h1>Private projects. Controlled access.</h1>
-        <p class="hero-lede">Everyone on your team gets a project space only they can see. Admins add people, set roles and reset passwords from one console.</p>
+        <p class="hero-lede">Everyone gets a project space of their own. Admins and the CEO set roles, decide who can open each file, and see it all live in CrimGuard.</p>
         <div class="hero-actions">
           <a class="btn btn-primary btn-lg" href="/login">Sign in</a>
           <a class="btn btn-secondary btn-lg" href="/admin/login">Open admin console</a>
@@ -38,16 +38,16 @@
         <div class="preview-window">
           <div class="preview-bar">
             <span class="preview-title">People &amp; roles</span>
-            <span class="preview-count">4 people, 2 admins</span>
+            <span class="preview-count">4 people, 2 with the console</span>
           </div>
           <div class="preview-row">
             <span class="preview-person"><span class="avatar is-admin">MO</span>Maya Okafor</span>
-            <span class="preview-select">Admin</span>
+            <span class="preview-select">CEO</span>
             <span class="preview-num">4 projects</span>
           </div>
           <div class="preview-row">
             <span class="preview-person"><span class="avatar">SC</span>Sam Carter</span>
-            <span class="preview-select">User</span>
+            <span class="preview-select">Employee</span>
             <span class="preview-num">3 projects</span>
           </div>
           <div class="preview-row is-changed">
@@ -57,7 +57,7 @@
           </div>
           <div class="preview-row">
             <span class="preview-person"><span class="avatar">JW</span>Jonas Weber</span>
-            <span class="preview-select">User</span>
+            <span class="preview-select">Intern</span>
             <span class="preview-num">5 projects</span>
           </div>
         </div>
@@ -69,46 +69,60 @@
       <div class="matrix-inner">
         <div>
           <h2 id="matrix-title">What each role can do</h2>
-          <p class="matrix-intro">Sign-up always creates a User. Only an admin can make someone an Admin, and nobody, admins included, can open another person's projects.</p>
+          <p class="matrix-intro">Every file is marked from 1 (Open) to 5 (Secret), and every role has a clearance on the same scale. Sign-up creates an Intern; only the CEO can make a CEO.</p>
         </div>
         <div class="table-wrap">
           <table class="matrix-table">
             <thead>
-              <tr><th scope="col">Action</th><th scope="col" class="role-col">User</th><th scope="col" class="role-col">Admin</th></tr>
+              <tr><th scope="col">Action</th><th scope="col" class="role-col">Intern</th><th scope="col" class="role-col">Employee</th><th scope="col" class="role-col">Admin</th><th scope="col" class="role-col">CEO</th></tr>
             </thead>
             <tbody>
               <tr>
-                <th scope="row">Create, edit and delete your own projects</th>
+                <th scope="row">Clearance</th>
+                <td class="role-col num">1</td>
+                <td class="role-col num">2</td>
+                <td class="role-col num">4</td>
+                <td class="role-col num">5</td>
+              </tr>
+              <tr>
+                <th scope="row">Run your own projects and upload files to them</th>
+                <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
+                <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
                 <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
                 <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
               </tr>
               <tr>
-                <th scope="row">Change your own password</th>
+                <th scope="row">Open files shared with you or your role</th>
+                <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
+                <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
                 <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
                 <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
               </tr>
               <tr>
-                <th scope="row">Open someone else's projects</th>
+                <th scope="row">Open anyone's files up to your clearance</th>
                 <td class="role-col"><span class="no" role="img" aria-label="No"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></td>
                 <td class="role-col"><span class="no" role="img" aria-label="No"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></td>
-              </tr>
-              <tr>
-                <th scope="row">Add people and choose their role</th>
-                <td class="role-col"><span class="no" role="img" aria-label="No"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></td>
+                <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
                 <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
               </tr>
               <tr>
-                <th scope="row">Change someone else's role</th>
+                <th scope="row">Choose who can open a file, and how confidential it is</th>
                 <td class="role-col"><span class="no" role="img" aria-label="No"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></td>
+                <td class="role-col"><span class="no" role="img" aria-label="No"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></td>
+                <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
                 <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
               </tr>
               <tr>
-                <th scope="row">Reset someone else's password</th>
+                <th scope="row">Add people, set roles, reset passwords and see everyone in CrimGuard</th>
                 <td class="role-col"><span class="no" role="img" aria-label="No"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></td>
+                <td class="role-col"><span class="no" role="img" aria-label="No"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></td>
+                <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
                 <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
               </tr>
               <tr>
-                <th scope="row">Delete someone else's account</th>
+                <th scope="row">Create roles, mark files Secret and make someone CEO</th>
+                <td class="role-col"><span class="no" role="img" aria-label="No"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></td>
+                <td class="role-col"><span class="no" role="img" aria-label="No"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></td>
                 <td class="role-col"><span class="no" role="img" aria-label="No"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg></span></td>
                 <td class="role-col"><span class="yes" role="img" aria-label="Yes"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5 6.5 11.5 12.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></td>
               </tr>

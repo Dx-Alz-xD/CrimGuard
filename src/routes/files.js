@@ -4,8 +4,13 @@ const { DuplicateFileNameError } = require('../db/files');
 const { HttpError } = require('../http/errors');
 const { readJson, readBinary } = require('../http/request');
 const { sendJson, noContent } = require('../http/response');
+const { CONFIDENTIALITY, MIN_LEVEL, MAX_LEVEL, canManageFileAccess, isLevel, isPrivileged, outranks } = require('../security/access');
 const { isDecoyId } = require('../telemetry/honeytokens');
 const { singleLine } = require('../validation');
+
+// How many roles and people one file can be shared with in a single save.
+const MAX_ROLE_GRANTS = 50;
+const MAX_PEOPLE_GRANTS = 500;
 
 // The name as it will be shown: only the last path segment, at most 255 characters.
 // singleLine also removes control and bidirectional characters and tidies whitespace.
@@ -62,6 +67,17 @@ const fileNotFound = () => new HttpError(404, 'File not found.');
 
 function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes, protection }) {
   const { projects, files } = stores;
+// A list of ids from the access dialog: whole numbers, each once.
+function idList(value, what, max) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > max || !value.every((id) => Number.isInteger(id) && id > 0)) {
+    throw new HttpError(400, `${what} must be a list of up to ${max} ids.`);
+  }
+  return [...new Set(value)];
+}
+
+function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes }) {
+  const { projects, files, roles, users, audit } = stores;
 
   function ownProject(user, projectId) {
     const project = projects.get(projectId, user.id);
@@ -183,6 +199,100 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
     if (!files.remove(params.fileId, project.id)) throw fileNotFound();
     reportAccess({ req, client, user, project }, 'delete');
     noContent(res);
+  });
+
+  // ---- files beyond your own projects --------------------------------------------------
+  //
+  // Everything below goes through files.visible*, the one place the visibility rule lives. A file
+  // someone may not see answers "not found", so its existence isn't given away.
+
+  // Files other people have shared with you, by name or through your role.
+  router.get('/api/files/shared', async ({ req, res, client }) => {
+    const user = sessions.requireUser(req);
+    const list = files.sharedWith(user.id);
+    telemetry.onAccess({
+      user, tokenHash: req.sessionTokenHash, client, kind: 'page', id: 'shared-files', name: 'Shared with me',
+      action: 'read', batch: list.length,
+    });
+    sendJson(res, 200, { files: list });
+  });
+
+  router.get('/api/files/:fileId/download', async ({ req, res, params, client }) => {
+    const user = sessions.requireUser(req);
+    const file = files.visibleContent(params.fileId, user.id);
+    if (!file) throw fileNotFound();
+    const project = { id: file.project_id, name: file.project_name };
+    reportAccess({ req, client, user, project }, 'download', { bytes: file.content.byteLength });
+    // Taking a copy of someone else's file is what the activity log is for; your own files are not logged.
+    if (file.owner_id !== user.id) {
+      const owner = users.findById(file.owner_id);
+      audit.record('file.downloaded', {
+        actor: user, target: owner || null, ...client, details: { file: file.id, project: file.project_id },
+      });
+    }
+    sendDownload(res, file.name, file.content);
+  });
+
+  const accessView = (file, access, viewer) => ({
+    file: {
+      id: file.id,
+      name: file.name,
+      confidentiality: file.confidentiality,
+      project: { id: file.project_id, name: file.project_name },
+      owner: { id: file.owner_id, name: file.owner_name, email: file.owner_email },
+    },
+    roles: access.roles,
+    people: access.people,
+    canManage: canManageFileAccess(viewer, file),
+  });
+
+  // Who a file is shared with. Its owner can look; admins and the CEO can look and change it.
+  router.get('/api/files/:fileId/access', async ({ req, res, params }) => {
+    const user = sessions.requireUser(req);
+    const file = files.visible(params.fileId, user.id);
+    if (!file) throw fileNotFound();
+    if (file.owner_id !== user.id && !isPrivileged(user.role)) {
+      throw new HttpError(403, 'Only the owner, admins and the CEO can see who has access to a file.');
+    }
+    sendJson(res, 200, accessView(file, files.access(file.id), user));
+  });
+
+  // Replaces a file's confidentiality and the whole list of roles and people it is shared with.
+  router.put('/api/files/:fileId/access', async ({ req, res, params, client }) => {
+    const actor = sessions.requireAdmin(req);
+    const file = files.visible(params.fileId, actor.id);
+    if (!file) throw fileNotFound();
+    if (!canManageFileAccess(actor, file)) throw new HttpError(403, 'Only the CEO can change access to this file.');
+
+    const body = await readJson(req);
+    const confidentiality = Number(body.confidentiality);
+    if (!isLevel(confidentiality)) {
+      throw new HttpError(400, `Confidentiality must be a whole number from ${MIN_LEVEL} to ${MAX_LEVEL}.`);
+    }
+    if (!outranks(actor, confidentiality)) {
+      throw new HttpError(403, `Your clearance lets you mark files up to ${actor.clearance} (${CONFIDENTIALITY[actor.clearance]}). Only the CEO can mark a file ${CONFIDENTIALITY[confidentiality]}.`);
+    }
+    const roleIds = idList(body.roles, 'Roles', MAX_ROLE_GRANTS);
+    if (!roleIds.every((id) => roles.byId(id))) throw new HttpError(400, 'One of those roles no longer exists. Reload and try again.');
+    // The owner can always see their own file, so they are never on the list.
+    const userIds = idList(body.people, 'People', MAX_PEOPLE_GRANTS).filter((id) => id !== file.owner_id);
+    if (!userIds.every((id) => users.findById(id))) throw new HttpError(400, 'One of those people no longer has an account. Reload and try again.');
+
+    const access = files.setAccess(file.id, { confidentiality, roleIds, userIds, grantedBy: actor.id });
+    audit.record('file.access_changed', {
+      actor, target: { id: file.owner_id, email: file.owner_email }, ...client,
+      details: {
+        file: file.id,
+        confidentiality: { from: file.confidentiality, to: confidentiality },
+        roles: access.roles.map((role) => role.name),
+        people: access.people.length,
+      },
+    });
+    telemetry.onPrivilege({
+      actor, tokenHash: req.sessionTokenHash, client, type: 'permission_change', targetRedUserId: file.owner_id,
+      systemName: 'file-access', details: { file: file.id, confidentiality },
+    });
+    sendJson(res, 200, accessView({ ...file, confidentiality }, access, actor));
   });
 }
 
