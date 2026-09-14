@@ -4,5 +4,10 @@ red.db-*
 node_modules/
 .env
 .env.*
+!.env.example
 *.key
 .~lock.*#
+*.db-journal
+*.db-wal
+*.db-shm
+*.db.tmp

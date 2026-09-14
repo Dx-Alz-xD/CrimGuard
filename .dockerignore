@@ -12,4 +12,5 @@ test
 docker-compose.yml
 demo
 scripts
-database/crimguard
+database/crimguard.db
+database/crimguard/archive
