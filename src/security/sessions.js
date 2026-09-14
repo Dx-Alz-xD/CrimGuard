@@ -86,6 +86,16 @@ function createSessionManager({ sessions, policy, secureCookies, now = Date.now 
     sessions.removeOthers(userId, req.sessionTokenHash || '');
   }
 
+  // The hash of a session cookie the browser presented that no longer names a session: a
+  // sign-out, an expiry, or a token being replayed. Returns null when the cookie is valid or
+  // absent. Call it after current(), which is what removes an expired session.
+  function staleTokenHash(req) {
+    const token = tokenFrom(req);
+    if (!token || token.length > 128) return null;
+    const tokenHash = hashToken(token);
+    return sessions.find(tokenHash) ? null : tokenHash;
+  }
+
   // allowPasswordChange: the few endpoints someone who must change their password can still use.
   function requireUser(req, { allowPasswordChange = false } = {}) {
     const user = current(req);
@@ -102,7 +112,7 @@ function createSessionManager({ sessions, policy, secureCookies, now = Date.now 
     return user;
   }
 
-  return { current, start, end, endOthers, clearCookie, requireUser, requireAdmin };
+  return { current, start, end, endOthers, clearCookie, requireUser, requireAdmin, staleTokenHash };
 }
 
 module.exports = { SECURE_COOKIE, PLAIN_COOKIE, createSessionManager };

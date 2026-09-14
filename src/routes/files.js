@@ -4,6 +4,7 @@ const { DuplicateFileNameError } = require('../db/files');
 const { HttpError } = require('../http/errors');
 const { readJson, readBinary } = require('../http/request');
 const { sendJson, noContent } = require('../http/response');
+const { isDecoyId } = require('../telemetry/honeytokens');
 const { singleLine } = require('../validation');
 
 // The name as it will be shown: only the last path segment, at most 255 characters.
@@ -59,45 +60,91 @@ const duplicateName = (name) =>
   new HttpError(409, `A file named "${name}" is already in this project. Rename one of them, or replace the existing file.`);
 const fileNotFound = () => new HttpError(404, 'File not found.');
 
-function registerFileRoutes(router, { stores, sessions, maxFileBytes }) {
+function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes }) {
   const { projects, files } = stores;
 
-  // Files are reached only through a project the signed-in person owns; for anyone else it doesn't exist.
-  function ownProject(req, projectId) {
-    const project = projects.get(projectId, sessions.requireUser(req).id);
+  function ownProject(user, projectId) {
+    const project = projects.get(projectId, user.id);
     if (!project) throw new HttpError(404, 'Project not found.');
     return project;
   }
 
-  router.get('/api/projects/:id/files', async ({ req, res, params }) => {
-    const project = ownProject(req, params.id);
-    sendJson(res, 200, { files: files.list(project.id), maxFileBytes });
+  // Decoy projects (telemetry/honeytokens.js) sit in a risky account's project list. Opening one must
+  // look like opening an empty project. Changing one is the trip, handled exactly as routes/projects.js
+  // does: record it, revoke every session the account has, and answer as a signed-out request.
+  // trip() returns null unless a live decoy with this id was planted for this very account; the request
+  // then carries on and gets the ordinary "not found".
+  async function springTrap({ req, user, id, client }) {
+    const report = await telemetry.honeytokens.trip({
+      user, decoyId: id, interaction: 'modified', client, tokenHash: req.sessionTokenHash,
+    });
+    if (!report) return;
+
+    stores.sessions.removeAll(user.id);
+    stores.audit.record('security.honeytoken_tripped', {
+      actor: user, target: user, ...client, details: { interaction: 'modified', decoy: report.decoy, score: report.score },
+    });
+    throw new HttpError(401, 'Your session has ended. Please sign in again.');
+  }
+
+  const isPlantedDecoy = async (user, id) =>
+    isDecoyId(id) && (await telemetry.honeytokens.listFor(user.id)).some((decoy) => decoy.id === id);
+
+  // File actions are reported the way project actions are: against the project, the kind of object the
+  // risk database models, with the file action and its size. Without a CrimGuard database this does nothing.
+  const reportAccess = ({ req, client, user, project }, action, extra = {}) =>
+    telemetry.onAccess({
+      user, tokenHash: req.sessionTokenHash, client, kind: 'project', id: project.id, name: project.name, action, ...extra,
+    });
+
+  router.get('/api/projects/:id/files', async ({ req, res, params, client }) => {
+    const user = sessions.requireUser(req);
+    if (await isPlantedDecoy(user, params.id)) {
+      sendJson(res, 200, { files: [], maxFileBytes });
+      return;
+    }
+    const project = ownProject(user, params.id);
+    const list = files.list(project.id);
+    reportAccess({ req, client, user, project }, 'read', { batch: list.length });
+    sendJson(res, 200, { files: list, maxFileBytes });
   });
 
-  router.post('/api/projects/:id/files', async ({ req, res, params }) => {
-    const project = ownProject(req, params.id);
+  router.post('/api/projects/:id/files', async ({ req, res, params, client }) => {
+    const user = sessions.requireUser(req);
+    if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, client });
+    const project = ownProject(user, params.id);
     const name = fileNameFromHeader(req.headers['x-file-name']);
     // Checked before reading the body, so a clash doesn't cost a full upload.
     if (files.nameTaken(project.id, name)) throw duplicateName(name);
     const content = await readBinary(req, res, maxFileBytes);
+    let file;
     try {
-      sendJson(res, 201, { file: files.create(project.id, { name, type: fileType(req.headers['x-file-type']), content }) });
+      file = files.create(project.id, { name, type: fileType(req.headers['x-file-type']), content });
     } catch (err) {
       if (err instanceof DuplicateFileNameError) throw duplicateName(name);
       throw err;
     }
+    reportAccess({ req, client, user, project }, 'write', { bytes: file.size });
+    sendJson(res, 201, { file });
   }, { body: 'binary' });
 
-  router.get('/api/projects/:id/files/:fileId/download', async ({ req, res, params }) => {
-    const project = ownProject(req, params.id);
+  router.get('/api/projects/:id/files/:fileId/download', async ({ req, res, params, client }) => {
+    const user = sessions.requireUser(req);
+    if (isDecoyId(params.id)) throw fileNotFound(); // a decoy has no files, matching its empty list
+    const project = ownProject(user, params.id);
     const file = files.content(params.fileId, project.id);
     if (!file) throw fileNotFound();
+    // A download is data leaving Red, so it goes to the risk database with its size.
+    reportAccess({ req, client, user, project }, 'download', { bytes: file.content.byteLength });
     sendDownload(res, file.name, file.content);
   });
 
-  router.patch('/api/projects/:id/files/:fileId', async ({ req, res, params }) => {
-    const project = ownProject(req, params.id);
-    if (!files.get(params.fileId, project.id)) throw fileNotFound();
+  router.patch('/api/projects/:id/files/:fileId', async ({ req, res, params, client }) => {
+    const user = sessions.requireUser(req);
+    if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, client });
+    const project = ownProject(user, params.id);
+    const existing = files.get(params.fileId, project.id);
+    if (!existing) throw fileNotFound();
     const name = fileName((await readJson(req)).name);
     if (files.nameTaken(project.id, name, params.fileId)) throw duplicateName(name);
     let file;
@@ -108,21 +155,29 @@ function registerFileRoutes(router, { stores, sessions, maxFileBytes }) {
       throw err;
     }
     if (!file) throw fileNotFound();
+    // Renaming shortly before taking data out is one of the staging signals the risk catalog looks for.
+    if (file.name !== existing.name) reportAccess({ req, client, user, project }, 'rename');
     sendJson(res, 200, { file });
   });
 
-  router.put('/api/projects/:id/files/:fileId/content', async ({ req, res, params }) => {
-    const project = ownProject(req, params.id);
+  router.put('/api/projects/:id/files/:fileId/content', async ({ req, res, params, client }) => {
+    const user = sessions.requireUser(req);
+    if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, client });
+    const project = ownProject(user, params.id);
     if (!files.get(params.fileId, project.id)) throw fileNotFound();
     const content = await readBinary(req, res, maxFileBytes);
     const file = files.replace(params.fileId, project.id, { type: fileType(req.headers['x-file-type']), content });
     if (!file) throw fileNotFound();
+    reportAccess({ req, client, user, project }, 'write', { bytes: file.size });
     sendJson(res, 200, { file });
   }, { body: 'binary' });
 
-  router.delete('/api/projects/:id/files/:fileId', async ({ req, res, params }) => {
-    const project = ownProject(req, params.id);
+  router.delete('/api/projects/:id/files/:fileId', async ({ req, res, params, client }) => {
+    const user = sessions.requireUser(req);
+    if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, client });
+    const project = ownProject(user, params.id);
     if (!files.remove(params.fileId, project.id)) throw fileNotFound();
+    reportAccess({ req, client, user, project }, 'delete');
     noContent(res);
   });
 }

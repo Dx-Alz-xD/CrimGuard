@@ -4,23 +4,25 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>Projects · Red</title>
+  <title>Risk console · Red</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
-<body class="app" data-page="dashboard">
+<body class="app" data-page="risk">
   <header class="topbar">
     <a class="wordmark" href="/"><span class="wordmark-mark" aria-hidden="true"></span>Red</a>
     <nav class="app-nav" aria-label="Sections">
-      <a href="/dashboard" aria-current="page">Projects</a>
+      <a href="/admin#projects">My projects</a>
+      <a href="/admin#people">People &amp; roles</a>
+      <a href="/admin/risk" aria-current="page">Risk</a>
     </nav>
     <div class="topbar-end">
-      <span class="role-badge">User</span>
+      <span class="role-badge is-admin">Admin</span>
       <button class="account-button" id="account-button" type="button" popovertarget="account-menu">
-        <span class="avatar" id="account-avatar" aria-hidden="true"></span>
+        <span class="avatar is-admin" id="account-avatar" aria-hidden="true"></span>
         <span class="account-name" id="account-name"></span>
       </button>
     </div>
@@ -31,7 +33,6 @@
       <span class="menu-name" id="menu-name"></span>
       <span class="menu-email" id="menu-email"></span>
     </div>
-    <button class="menu-item" type="button" id="edit-profile">Profile</button>
     <button class="menu-item" type="button" id="change-password">Change password</button>
     <button class="menu-item" type="button" id="logout">Log out</button>
   </div>
@@ -39,16 +40,44 @@
   <main class="page">
     <header class="page-header">
       <div>
-        <h1>Projects</h1>
-        <p>Only you can see these.</p>
+        <h1>Risk</h1>
+        <p id="risk-summary">Loading the assessment…</p>
       </div>
-      <button class="btn btn-primary" type="button" data-new-project>New project</button>
+      <button class="btn btn-secondary" type="button" id="recompute">Recompute today</button>
     </header>
-    <div id="projects"></div>
+
+    <div class="surface table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">Person</th>
+            <th scope="col">Score</th>
+            <th scope="col">Scenario</th>
+            <th scope="col">Last snapshot</th>
+            <th scope="col"><span class="sr-only">Actions</span></th>
+          </tr>
+        </thead>
+        <tbody id="risk-rows"></tbody>
+      </table>
+    </div>
+
+    <section id="risk-detail" hidden>
+      <header class="page-header">
+        <div>
+          <h2 id="detail-name"></h2>
+          <p id="detail-meta"></p>
+        </div>
+        <button class="btn btn-quiet" type="button" id="detail-hr">HR context</button>
+      </header>
+      <div class="surface" id="detail-features"></div>
+    </section>
+
+    <p class="muted" id="risk-footnote"></p>
   </main>
 
   <div class="toast" id="toast" role="status" hidden></div>
   <script src="/static/app.js"></script>
+  <script src="/static/risk-console.js"></script>
   <script src="/static/telemetry.js"></script>
   <script src="/static/risk-panel.js"></script>
 </body>

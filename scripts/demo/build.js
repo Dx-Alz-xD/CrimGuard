@@ -14,16 +14,29 @@ const outDir = path.join(root, 'demo');
 // Longest paths first, so "/admin/login" is never rewritten as "/admin".
 const PAGE_LINKS = [
   ['/admin/login', 'admin-login.html'],
+  ['/admin/risk', 'risk.html'],
   ['/dashboard', 'dashboard.html'],
+  ['/privacy', 'privacy.html'],
   ['/signup', 'signup.html'],
   ['/login', 'login.html'],
   ['/admin', 'admin.html'],
   ['/', 'index.html'],
 ];
 
+// The risk console reads the CrimGuard database through the server, so there is nothing for it
+// to show without one. Its page, and the two scripts that talk to those endpoints, are left out
+// rather than shipped broken.
+const SERVER_ONLY_PAGES = new Set(['risk.html']);
+const SERVER_ONLY_SCRIPTS = ['telemetry.js', 'risk-panel.js', 'risk-console.js'];
+
 function toStatic(html) {
   let out = html.replaceAll('"/static/', '"static/');
   for (const [from, to] of PAGE_LINKS) out = out.replaceAll(`href="${from}"`, `href="${to}"`);
+  for (const script of SERVER_ONLY_SCRIPTS) {
+    out = out.replace(new RegExp(`[ \t]*<script src="static/${script}"></script>\r?\n`, 'g'), '');
+  }
+  // A link into the risk console would be a dead end in a folder that doesn't contain it.
+  out = out.replace(/\s*<a href="risk\.html"[^>]*>.*?<\/a>/g, '');
 
   const demoScript = '<script src="static/demo-api.js"></script>';
   out = out.includes('<script src="static/app.js"></script>')
@@ -38,9 +51,10 @@ function toStatic(html) {
 fs.rmSync(outDir, { recursive: true, force: true });
 fs.mkdirSync(outDir, { recursive: true });
 fs.cpSync(path.join(publicDir, 'static'), path.join(outDir, 'static'), { recursive: true });
+for (const script of SERVER_ONLY_SCRIPTS) fs.rmSync(path.join(outDir, 'static', script), { force: true });
 fs.copyFileSync(path.join(__dirname, 'demo-api.js'), path.join(outDir, 'static', 'demo-api.js'));
 
-const pages = fs.readdirSync(publicDir).filter((file) => file.endsWith('.html'));
+const pages = fs.readdirSync(publicDir).filter((file) => file.endsWith('.html') && !SERVER_ONLY_PAGES.has(file));
 for (const file of pages) {
   fs.writeFileSync(path.join(outDir, file), toStatic(fs.readFileSync(path.join(publicDir, file), 'utf8')));
 }

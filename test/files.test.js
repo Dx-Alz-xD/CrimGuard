@@ -2,7 +2,9 @@
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
-const { startApp } = require('./helpers');
+const { connectCrimGuard } = require('../src/db/crimguard');
+const { isDecoyId, DECOY_ID_BASE } = require('../src/telemetry/honeytokens');
+const { startApp, PASSWORD } = require('./helpers');
 
 let app;
 before(async () => { app = await startApp(); });
@@ -19,11 +21,11 @@ async function sendBytes(b, method, url, bytes, headers = {}, base = app.base) {
   return { status: res.status, headers: res.headers, body: isJson ? await res.json() : Buffer.from(await res.arrayBuffer()) };
 }
 
-const upload = (b, projectId, name, text, type = 'text/plain') =>
+const upload = (b, projectId, name, text, type = 'text/plain', base = app.base) =>
   sendBytes(b, 'POST', `/api/projects/${projectId}/files`, Buffer.from(text), {
     'x-file-name': encodeURIComponent(name),
     'x-file-type': type,
-  });
+  }, base);
 
 async function newProject(b, name = 'Files project') {
   const res = await b('POST', '/api/projects', { name });
@@ -167,4 +169,95 @@ test('deleting a file, a project or an account removes the stored contents', asy
   const admin = await app.signInAdmin();
   assert.equal((await admin.b('DELETE', `/api/admin/users/${user.id}`)).status, 204);
   assert.equal(filesIn(keep.id, drop.id), 0);
+});
+
+// --- decoy projects and the CrimGuard risk database ---------------------------------------
+
+// An app with the risk database attached, set up the same way as in telemetry.test.js.
+async function startWithRisk() {
+  const crimguard = await connectCrimGuard({ mode: 'sqlite', sqlitePath: ':memory:' });
+  const risky = await startApp({ crimguard, riskInterval: 0 });
+  const telemetry = risky.server.telemetry;
+  return {
+    ...risky,
+    crimguard,
+    telemetry,
+    async close() {
+      await telemetry.flush();
+      risky.close();
+      await crimguard.close();
+    },
+  };
+}
+
+// Signs someone up and plants a decoy in their project list; returns the decoy as their list shows it.
+async function signUpWithDecoy(risky, name) {
+  const person = await risky.signUp(name);
+  await person.b('GET', '/api/projects');
+  await risky.telemetry.flush();
+  await risky.telemetry.honeytokens.plantIfNeeded(person.user.id, 95);
+  const decoy = (await person.b('GET', '/api/projects')).body.projects.find((project) => isDecoyId(project.id));
+  assert.ok(decoy, 'a decoy was planted');
+  return { ...person, decoy };
+}
+
+test('without a planted decoy, an id in the decoy range is just a project that does not exist', async () => {
+  const { b } = await app.signUp();
+  const id = DECOY_ID_BASE + 1;
+  assert.equal((await b('GET', `/api/projects/${id}/files`)).status, 404);
+  assert.equal((await upload(b, id, 'x.txt', 'x')).status, 404);
+  assert.equal((await b('GET', '/api/me')).status, 200, 'nothing was tripped');
+});
+
+test('opening a decoy shows an empty project, and downloading from it finds nothing', async (t) => {
+  const risky = await startWithRisk();
+  t.after(() => risky.close());
+  const { b, decoy } = await signUpWithDecoy(risky, 'Curious');
+
+  const opened = await b('GET', `/api/projects/${decoy.id}/files`);
+  assert.equal(opened.status, 200);
+  assert.deepEqual(opened.body.files, []);
+  assert.equal((await sendBytes(b, 'GET', `/api/projects/${decoy.id}/files/1/download`, undefined, {}, risky.base)).status, 404);
+
+  assert.equal((await b('GET', '/api/me')).status, 200, 'looking is not a trip');
+  const { rows } = await risky.crimguard.query('SELECT COUNT(*) AS n FROM honeytoken_triggers');
+  assert.equal(Number(rows[0].n), 0);
+});
+
+test('uploading to a decoy trips it: every session is revoked and the trip is recorded', async (t) => {
+  const risky = await startWithRisk();
+  t.after(() => risky.close());
+  const { b, email, decoy } = await signUpWithDecoy(risky, 'Took The Bait');
+
+  // Signed in on a second device, to check the revocation reaches everywhere.
+  const phone = risky.browser();
+  assert.equal((await phone('POST', '/api/login', { email, password: PASSWORD, portal: 'user' })).status, 200);
+
+  const attempt = await upload(b, decoy.id, 'loot.txt', 'mine now', 'text/plain', risky.base);
+  assert.equal(attempt.status, 401, 'refused as signed-out, which sends the browser to the login page');
+  assert.equal((await b('GET', '/api/me')).status, 401, 'this session is gone');
+  assert.equal((await phone('GET', '/api/me')).status, 401, 'and so is every other one');
+
+  const { rows } = await risky.crimguard.query('SELECT interaction FROM honeytoken_triggers');
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].interaction, 'modified');
+});
+
+test('file actions reach the risk database as accesses to their project', async (t) => {
+  const risky = await startWithRisk();
+  t.after(() => risky.close());
+  const { b } = await risky.signUp('Recorded');
+  const project = (await b('POST', '/api/projects', { name: 'Tracked' })).body.project;
+
+  const { file } = (await upload(b, project.id, 'report.txt', 'report body', 'text/plain', risky.base)).body;
+  assert.equal((await sendBytes(b, 'GET', `/api/projects/${project.id}/files/${file.id}/download`, undefined, {}, risky.base)).status, 200);
+  assert.equal((await b('PATCH', `/api/projects/${project.id}/files/${file.id}`, { name: 'report-final.txt' })).status, 200);
+  assert.equal((await b('DELETE', `/api/projects/${project.id}/files/${file.id}`)).status, 204);
+  await risky.telemetry.flush();
+
+  const { rows } = await risky.crimguard.query('SELECT action FROM file_access_events');
+  const actions = rows.map((row) => row.action);
+  for (const action of ['write', 'download', 'rename', 'delete']) {
+    assert.ok(actions.includes(action), `a ${action} was recorded (saw: ${actions.join(', ')})`);
+  }
 });

@@ -55,6 +55,7 @@ async function main() {
 
   const server = createApp({
     db,
+    crimguard,
     pepper: config.pepper,
     secureCookies: config.secureCookies,
     trustProxy: config.trustProxy,
