@@ -1114,7 +1114,10 @@
 
     async function load() {
       try {
-        ({ files } = await api('GET', '/api/files/shared'));
+        // The response also carries the decoys, which the shared-files panel draws; a real share
+        // is the one with a project behind it.
+        const shared = await api('GET', '/api/files/shared');
+        files = (shared.files || []).filter((file) => 'project_id' in file);
         loaded = true;
       } catch (err) {
         toast(err.message, 'error');

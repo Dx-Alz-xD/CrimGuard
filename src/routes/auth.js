@@ -71,7 +71,7 @@ async function createAccount({ users, passwords, files, roles, audit }, body, { 
 }
 
 function registerAuthRoutes(router, deps) {
-  const { stores, sessions, passwords, throttle, limits, telemetry } = deps;
+  const { stores, sessions, passwords, throttle, limits, telemetry, protection } = deps;
   const { users, audit } = stores;
 
   router.post('/api/signup', async ({ req, res, client }) => {
@@ -117,6 +117,9 @@ function registerAuthRoutes(router, deps) {
     if (portal === 'user' && isPrivileged(row.role)) {
       throw new HttpError(403, `This is ${row.role === 'ceo' ? 'the CEO account' : 'an admin account'}. Use the admin login.`);
     }
+
+    // A frozen account waits for an admin to restore it (src/identity/), password or not.
+    await protection?.assertCanSignIn(row.id);
 
     if (needsRehash) users.upgradeHash(row.id, await passwords.hash(password), row.password_hash);
     if (emailKey) throttle.reset(emailKey);

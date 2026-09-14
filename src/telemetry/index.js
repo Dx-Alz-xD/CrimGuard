@@ -69,8 +69,10 @@ function createTelemetry(db, {
   onError = (err) => console.error('Telemetry:', err.message),
   honeytokenScore = Number(process.env.RED_HONEYTOKEN_SCORE) || undefined,
   onHoneytokenTrip = null,
-  // Called with every score as it is computed. The website uses it to keep its own copy, which
-  // is what risk limiting reads when it decides which files someone can still see.
+  // Called with { crimUserId, redUserId, date, result, score, level, scenario } after a person's
+  // day is scored. The website uses it to keep its own copy of the score, which is what risk
+  // limiting reads when it decides which files someone can still see, and a response
+  // (src/protection/) acts on the same score straight away.
   onScored = null,
 } = {}) {
   if (!db) return createNoop();
@@ -134,11 +136,13 @@ function createTelemetry(db, {
 
   // Hands a finished score to whoever asked for it. A listener that throws must not take the
   // scoring run down with it.
-  function report(redUserId, result, date) {
+  // The one place a finished score leaves the pipeline, so everything that reacts to a score is
+  // reached the same way whether the day was aggregated, refreshed on demand or forced.
+  async function report({ crimUserId, redUserId, result, date }) {
     if (!onScored) return;
     try {
-      onScored({
-        redUserId, date,
+      await onScored({
+        crimUserId, redUserId, date, result,
         score: result.finalScore,
         level: result.riskLevel,
         scenario: result.scenario ?? null,
@@ -399,9 +403,10 @@ function createTelemetry(db, {
         if (!result) continue;
         scored += 1;
         const redUserId = person.okta_user_id ? Number(person.okta_user_id.slice(4)) : null;
-        if (!redUserId) continue;
-        report(redUserId, result, date);
-        if (date === today() && await honeytokens.plantIfNeeded(redUserId, result.finalScore)) planted += 1;
+        if (redUserId && date === today() && await honeytokens.plantIfNeeded(redUserId, result.finalScore)) planted += 1;
+        // Only today is reported onward. This also re-runs yesterday on startup, and the website
+        // keeps one current score per account, so reporting that would overwrite today's.
+        if (date === today()) await report({ crimUserId: person.id, redUserId, result, date });
       }
       return { date, people: people.length, snapshots, scored, planted };
     },
@@ -426,9 +431,9 @@ function createTelemetry(db, {
         await writeSnapshot(db, { userId: crimUserId, date, features, layout });
         const result = await scorer.scoreUserDay(crimUserId, date);
         if (result) {
-          report(user.id, result, date);
           // Crossing the threshold is what puts a decoy in front of them.
           await honeytokens.plantIfNeeded(user.id, result.finalScore);
+          if (date === today()) await report({ crimUserId, redUserId: user.id, result, date });
         }
       }
       refreshed.set(key, { at: Date.now(), crimUserId });
@@ -461,7 +466,7 @@ function createTelemetry(db, {
       if (score === null) {
         const result = await scorer.scoreUserDay(crimUserId, date);
         if (result) {
-          report(user.id, result, date);
+          await report({ crimUserId, redUserId: user.id, result, date });
           await honeytokens.plantIfNeeded(user.id, result.finalScore);
         }
         return { date, forced: false, score: result?.finalScore ?? null, level: result?.riskLevel ?? null };
@@ -484,7 +489,7 @@ function createTelemetry(db, {
             JSON.stringify({ override: true, setAt: new Date().toISOString() })],
         );
       }
-      report(user.id, { finalScore: score, riskLevel: band, scenario: null }, date);
+      await report({ crimUserId, redUserId: user.id, result: { finalScore: score, riskLevel: band, scenario: null }, date });
       await honeytokens.plantIfNeeded(user.id, score);
       return { date, forced: true, score, level: band };
     },

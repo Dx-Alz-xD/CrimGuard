@@ -14,6 +14,7 @@
 const { classifyText } = require('./patterns');
 const { isSensitiveUri } = require('./subjects');
 const { locate, travelBetween } = require('./geo');
+const { dailyDeviation: biometricDeviation } = require('../biometrics/model');
 
 const HISTORY_DAYS = 90;
 // The catalog's "vs baseline" variables compare against the rolling 30-day window that
@@ -110,7 +111,7 @@ async function loadWindow(db, userId, from, to) {
   const range = [userId, from, to];
   const scan = async (sql, params = range) => (await db.query(sql, params)).rows;
 
-  const [files, transfers, clipboard, endpoints, auth, biometrics, privilege, network, communication, sessions] = await Promise.all([
+  const [files, transfers, clipboard, endpoints, auth, biometrics, privilege, network, communication, sessions, biometricWindows] = await Promise.all([
     scan(`SELECT f.occurred_at, f.action, f.bytes, f.resource_id, f.search_query, f.files_in_batch, f.previous_path,
                  r.resource_type, r.sensitivity, r.uri
           FROM file_access_events f LEFT JOIN resources r ON r.id = f.resource_id
@@ -138,9 +139,12 @@ async function loadWindow(db, userId, from, to) {
           WHERE user_id = ? AND occurred_at >= ? AND occurred_at < ? ORDER BY occurred_at LIMIT ${ROW_LIMIT}`),
     scan(`SELECT started_at, ended_at, source_ip, city, device_id FROM user_sessions
           WHERE user_id = ? AND started_at >= ? AND started_at < ? ORDER BY started_at LIMIT ${ROW_LIMIT}`),
+    scan(`SELECT window_start, keys_z, pointer_z FROM biometric_windows
+          WHERE user_id = ? AND window_start >= ? AND window_start < ? AND distance_z IS NOT NULL
+          ORDER BY window_start LIMIT ${ROW_LIMIT}`),
   ]);
 
-  return { files, transfers, clipboard, endpoints, auth, biometrics, privilege, network, communication, sessions };
+  return { files, transfers, clipboard, endpoints, auth, biometrics, privilege, network, communication, sessions, biometricWindows };
 }
 
 // The person's HR timeline and employment details, which live in the CrimGuard tables because
@@ -396,8 +400,14 @@ function computeFeatures({ date, window, subject, holidays = [], hours = { start
   const dailyStat = (field) => dailyTotals(byDay(window.biometrics, (r) => r.window_start), date, (rows) => statOf(rows, field))
     .filter((value) => value !== null);
 
-  f.keystroke_cadence_deviation = deviation(statOf(samples, 'keystroke_interval_mean_ms'), dailyStat('keystroke_interval_mean_ms'), 5);
-  f.mouse_velocity_deviation = deviation(statOf(samples, 'mouse_velocity_mean_px_s'), dailyStat('mouse_velocity_mean_px_s'), 10);
+  // Against the person's own typing and pointer profile (src/biometrics/) when the page sent
+  // judged windows today; otherwise the day's average against earlier days.
+  const judged = biometricDeviation(on(window.biometricWindows || [], (r) => r.window_start)
+    .map((row) => ({ keysZ: row.keys_z, pointerZ: row.pointer_z })));
+  f.keystroke_cadence_deviation = judged.keys
+    ?? deviation(statOf(samples, 'keystroke_interval_mean_ms'), dailyStat('keystroke_interval_mean_ms'), 5);
+  f.mouse_velocity_deviation = judged.pointer
+    ?? deviation(statOf(samples, 'mouse_velocity_mean_px_s'), dailyStat('mouse_velocity_mean_px_s'), 10);
 
   const scrollDeviation = deviation(statOf(samples, 'scroll_velocity_mean'), dailyStat('scroll_velocity_mean'), 5);
   // Consistency is the opposite of deviation, on a 0-1 scale: 1 is exactly the usual pattern.

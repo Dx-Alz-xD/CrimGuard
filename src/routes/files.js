@@ -74,7 +74,7 @@ function idList(value, what, max) {
   return [...new Set(value)];
 }
 
-function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes }) {
+function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes, protection }) {
   const { projects, files, roles, users, audit } = stores;
 
   function ownProject(user, projectId) {
@@ -98,6 +98,8 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes 
     stores.audit.record('security.honeytoken_tripped', {
       actor: user, target: user, ...client, details: { interaction: 'modified', decoy: report.decoy, score: report.score },
     });
+    // The identity throttle turns it into a freeze: signing back in waits for an admin.
+    await protection?.onHoneytokenTrip(report);
     throw new HttpError(401, 'Your session has ended. Please sign in again.');
   }
 
@@ -131,6 +133,7 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes 
     // Checked before reading the body, so a clash doesn't cost a full upload.
     if (files.nameTaken(project.id, name)) throw duplicateName(name);
     const content = await readBinary(req, res, maxFileBytes);
+    await protection?.inspectUpload({ user, content, client });
     let file;
     try {
       file = files.create(project.id, { name, type: fileType(req.headers['x-file-type']), content });
@@ -180,6 +183,7 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes 
     const project = ownProject(user, params.id);
     if (!files.get(params.fileId, project.id)) throw fileNotFound();
     const content = await readBinary(req, res, maxFileBytes);
+    await protection?.inspectUpload({ user, content, client });
     const file = files.replace(params.fileId, project.id, { type: fileType(req.headers['x-file-type']), content });
     if (!file) throw fileNotFound();
     reportAccess({ req, client, user, project }, 'write', { bytes: file.size });
@@ -200,15 +204,27 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes 
   // Everything below goes through files.visible*, the one place the visibility rule lives. A file
   // someone may not see answers "not found", so its existence isn't given away.
 
-  // Files other people have shared with you, by name or through your role.
+  // Files other people have shared with you, by name or through your role - and, for an account the
+  // honeytrap has planted for, the decoys among them, plus the clipboard watch list.
+  //
+  // One endpoint carries both on purpose. A decoy served from a path of its own would be a decoy
+  // that anyone can identify from the page's network traffic alone, which is the whole thing the
+  // trap is trying not to be. Decoy ids come from their own reserved range (FILE_ID_BASE in
+  // honeytrap/honeytrap.js), so they can never collide with a real file's.
   router.get('/api/files/shared', async ({ req, res, client }) => {
     const user = sessions.requireUser(req);
     const list = files.sharedWith(user.id);
     telemetry.onAccess({
+      // Counted over the real shares only. A decoy is planted *because* a score is already high, so
+      // counting it back in would let the trap feed the score that planted it.
       user, tokenHash: req.sessionTokenHash, client, kind: 'page', id: 'shared-files', name: 'Shared with me',
       action: 'read', batch: list.length,
     });
-    sendJson(res, 200, { files: list });
+    const [lures, watch] = await Promise.all([
+      protection?.honeytrap.filesFor(user) ?? [],
+      protection?.honeytrap.watchList(user) ?? [],
+    ]);
+    sendJson(res, 200, { files: [...list, ...lures], watch });
   });
 
   router.get('/api/files/:fileId/download', async ({ req, res, params, client }) => {

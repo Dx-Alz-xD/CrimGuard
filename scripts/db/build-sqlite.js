@@ -10,7 +10,7 @@
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 const { buildSqliteSchema } = require('../../src/db/sqlite-schema');
-const { connectCrimGuard, createSqliteDatabase, toSqliteValue, DEFAULT_SQLITE_PATH } = require('../../src/db/crimguard');
+const { connectCrimGuard, createSqliteDatabase, toSqliteValue, SEED_SQLITE_PATH } = require('../../src/db/crimguard');
 
 async function copyFromPostgres(file) {
   const source = await connectCrimGuard({ mode: 'postgres' });
@@ -41,7 +41,7 @@ async function copyFromPostgres(file) {
 
 async function main() {
   const fromPostgres = process.argv.includes('--from-postgres');
-  const file = path.resolve(process.env.CRIMGUARD_SQLITE_PATH || DEFAULT_SQLITE_PATH);
+  const file = path.resolve(process.env.CRIMGUARD_SQLITE_PATH || SEED_SQLITE_PATH);
   if (fromPostgres) console.log('Copying rows from PostgreSQL:');
   await createSqliteDatabase(file, fromPostgres ? copyFromPostgres : undefined);
   console.log(`Built ${path.relative(process.cwd(), file)}${fromPostgres ? ' with the PostgreSQL data' : ''}. Commit it to share it.`);

@@ -24,11 +24,14 @@ const PAGE_LINKS = [
   ['/', 'index.html'],
 ];
 
-// The risk console and the CrimGuard dashboard both read the risk database through the server,
-// so there is nothing for either to show without one. Their pages, and the scripts that talk to
-// those endpoints, are left out rather than shipped broken.
+// The risk console, the CrimGuard dashboard and everything under src/protection/ read the risk
+// database through the server, so there is nothing for any of them to show without one. Their
+// pages, and the scripts that talk to those endpoints, are left out rather than shipped broken.
 const SERVER_ONLY_PAGES = new Set(['risk.html', 'crimguard.html']);
-const SERVER_ONLY_SCRIPTS = ['telemetry.js', 'risk-panel.js', 'risk-console.js', 'crimguard.js'];
+const SERVER_ONLY_SCRIPTS = [
+  'telemetry.js', 'risk-panel.js', 'risk-console.js', 'crimguard.js',
+  'biometrics.js', 'shared-files.js', 'step-up.js', 'identity-console.js',
+];
 
 function toStatic(html) {
   let out = html.replaceAll('"/static/', '"static/');

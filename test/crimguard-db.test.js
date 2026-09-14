@@ -26,8 +26,8 @@ test('the SQLite schema has every table, column, view and all 100 risk variables
   const { tables } = buildSqliteSchema();
   const objects = (await db.query("SELECT type, name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'")).rows;
 
-  assert.equal(tables.length, 55);
-  assert.equal(objects.filter((o) => o.type === 'table').length, 55);
+  assert.equal(tables.length, 56);
+  assert.equal(objects.filter((o) => o.type === 'table').length, 56);
   assert.deepEqual(objects.filter((o) => o.type === 'view').map((o) => o.name).sort(), ['v_active_user_context', 'v_risk_feature_vector', 'v_shadow_ai_activity']);
   for (const table of tables) assert.deepEqual(await columnsOf(db, table.name), table.columns.map((c) => c.name), table.name);
 

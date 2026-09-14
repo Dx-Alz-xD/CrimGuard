@@ -1,4 +1,4 @@
-'use strict';
+  'use strict';
 
 const http = require('node:http');
 const { DEFAULT_MAX_FILE_BYTES, RATE_LIMITS, SESSION_POLICY } = require('./config');
@@ -20,6 +20,7 @@ const { registerTelemetryRoutes } = require('./routes/telemetry');
 const { registerCrimGuardRoutes } = require('./routes/crimguard');
 const { createPageHandler } = require('./routes/pages');
 const { createTelemetry } = require('./telemetry');
+const { createProtection } = require('./protection');
 
 const HOUSEKEEPING_INTERVAL_MS = 60 * 60 * 1000;
 // Often enough that the risk console shows today as it happens, cheap enough to leave running.
@@ -62,26 +63,36 @@ function createApp({
   riskInterval = RISK_INTERVAL_MS,
   now = Date.now,
   maxFileBytes = DEFAULT_MAX_FILE_BYTES,
+  protectionOptions = {},
 }) {
   const stores = createStores(db);
   const passwords = createPasswordHasher({ pepper });
   const throttle = createThrottle(db, { now });
   const sessions = createSessionManager({ sessions: stores.sessions, policy: sessionPolicy, secureCookies, now });
+  // Identity throttle, biometrics and honeytrapping (src/protection/). Like telemetry, each part
+  // is a no-op without the risk database.
+  const protection = createProtection({ crimguard, stores, sessions, now, ...protectionOptions });
   // Behavioural telemetry into the CrimGuard risk database. Without that database this is a
   // no-op object, so every route below behaves the same whether or not it is connected.
-  // Scores come back from the risk database and are kept in red.db, because that is where the
-  // SQL that decides who can see which file can reach them.
+  // Two things hang off every score, and both go through this one hook. The website keeps its
+  // own copy in red.db, because that is where the SQL that decides who can see which file can
+  // reach it; then the response layer acts on the new score - step-up, freeze, a fresh decoy.
   const telemetry = createTelemetry(crimguard, {
-    onScored: ({ redUserId, score, level, scenario, date }) => {
-      try {
-        stores.risk.setState(redUserId, { score, level, scenario, scoredOn: date });
-      } catch (err) {
-        // An account deleted between scoring and writing back is not an error worth raising.
-        if (!/FOREIGN KEY constraint failed/.test(err.message)) throw err;
+    onScored: async (scored) => {
+      const { redUserId, score, level, scenario, date } = scored;
+      // A CrimGuard person with no Red account behind them is scored but has nothing to write back to.
+      if (redUserId) {
+        try {
+          stores.risk.setState(redUserId, { score, level, scenario, scoredOn: date });
+        } catch (err) {
+          // An account deleted between scoring and writing back is not an error worth raising.
+          if (!/FOREIGN KEY constraint failed/.test(err.message)) throw err;
+        }
       }
+      await protection.onScored(scored);
     },
   });
-  const deps = { stores, sessions, passwords, throttle, limits: rateLimits, telemetry, crimguard, maxFileBytes, sessionPolicy, now };
+  const deps = { stores, sessions, passwords, throttle, limits: rateLimits, telemetry, crimguard, maxFileBytes, sessionPolicy, now, protection };
 
   const router = createRouter();
   registerAuthRoutes(router, deps);
@@ -90,6 +101,7 @@ function createApp({
   registerFileRoutes(router, deps);
   registerAdminRoutes(router, deps);
   registerTelemetryRoutes(router, deps);
+  protection.register(router, deps);
   registerCrimGuardRoutes(router, deps);
   const handlePage = createPageHandler({ db, sessions, telemetry });
 
@@ -117,6 +129,7 @@ function createApp({
     if (method !== 'GET' && method !== 'HEAD') assertSameOrigin(req, { trustProxy, binary: found?.options?.body === 'binary' });
     if (!found) throw new HttpError(404, 'Not found.');
     if (found.allowed) throw new HttpError(405, 'Method not allowed.', { headers: { Allow: found.allowed.join(', ') } });
+    await protection.guard(req, pathname);
 
     return found.handler({ req, res, url, params: found.params, client });
   }
@@ -207,8 +220,10 @@ function createApp({
   server.on('close', () => {
     clearInterval(timer);
     if (riskTimer) clearInterval(riskTimer);
+    protection.close();
   });
   server.telemetry = telemetry;
+  server.protection = protection;
 
   return server;
 }
