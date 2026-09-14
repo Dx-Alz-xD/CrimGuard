@@ -6,10 +6,18 @@ services:
     environment:
       RED_ADMIN_NAME: ${RED_ADMIN_NAME:-Red Admin}
       RED_ADMIN_EMAIL: ${RED_ADMIN_EMAIL:-admin@red.local}
-      # Only used to create the first admin, but required so it never gets a default password.
+      # Only used to create the first admin, but required so it never gets a guessable password.
       RED_ADMIN_PASSWORD: ${RED_ADMIN_PASSWORD:?Set RED_ADMIN_PASSWORD in your environment or a .env file}
+      # Secret mixed into every password hash. Generate once with `openssl rand -base64 48`, keep it
+      # out of the database backups, and never change it: a new pepper invalidates every password.
+      RED_PASSWORD_PEPPER: ${RED_PASSWORD_PEPPER:?Set RED_PASSWORD_PEPPER in your environment or a .env file}
+      # Set to 1 when a reverse proxy sits in front, so rate limits see real client addresses.
+      RED_TRUST_PROXY: ${RED_TRUST_PROXY:-0}
     volumes:
       - red-data:/data
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
 
 volumes:

@@ -1,13 +1,13 @@
 'use strict';
 
 // Builds a static copy of Red into demo/: the real pages, styles and client script, with
-// scripts/demo-api.js standing in for the server. Open demo/index.html directly, or publish
+// scripts/demo/demo-api.js standing in for the server. Open demo/index.html directly, or publish
 // the folder on any static host such as GitHub Pages. Rebuild after changing anything in public/.
 
 const fs = require('node:fs');
 const path = require('node:path');
 
-const root = path.join(__dirname, '..', '..'); // this script lives in scripts/demo/
+const root = path.join(__dirname, '..', '..');
 const publicDir = path.join(root, 'public');
 const outDir = path.join(root, 'demo');
 

@@ -1,55 +1,75 @@
 'use strict';
 
-const path = require('node:path');
-const { openDb, hasAdmin, ensureAdmin } = require('./db');
-const { createApp } = require('./app');
+// Startup: configuration checks, database migrations, the first admin, graceful shutdown.
 
-const isProduction = process.env.NODE_ENV === 'production';
-const PORT = Number(process.env.PORT) || 3000;
-// In a container or on a hosting platform traffic arrives from outside, so listen on every interface there.
-const HOST = process.env.HOST || (isProduction ? '0.0.0.0' : '127.0.0.1');
-const DEFAULT_ADMIN_PASSWORD = 'admin12345';
+// Files this process creates (database, WAL, pepper) are private to its user.
+process.umask(0o077);
+
+const { ConfigError, loadConfig } = require('./config');
+const { openDb, hasAdmin, ensureAdmin } = require('./db');
+const { connectCrimGuard, describeConnection } = require('./db/crimguard');
+const { createApp } = require('./app');
+const { createPasswordHasher } = require('./security/passwords');
+const { newPassword } = require('./security/tokens');
 
 function fail(message) {
   console.error(`Red can't start: ${message}`);
   process.exit(1);
 }
 
-async function main() {
-  // Default database file stays at the project root (Red/red.db), where it lived before this file moved into src/.
-  const db = openDb(process.env.RED_DB || path.join(__dirname, '..', 'red.db'));
-
-  if (!hasAdmin(db)) {
-    const password = process.env.RED_ADMIN_PASSWORD;
-    if (isProduction && !password) {
-      fail('no admin account exists yet. Set RED_ADMIN_EMAIL and RED_ADMIN_PASSWORD so the first admin is not created with a default password.');
-    }
-    if (password && password.length < 8) fail('RED_ADMIN_PASSWORD must be at least 8 characters.');
-
-    const admin = {
-      name: process.env.RED_ADMIN_NAME || 'Red Admin',
-      email: (process.env.RED_ADMIN_EMAIL || 'admin@red.local').trim().toLowerCase(),
-      password: password || DEFAULT_ADMIN_PASSWORD,
-    };
-    await ensureAdmin(db, admin);
-    console.log(`Created admin account ${admin.email}${password ? '' : ` with the default password "${DEFAULT_ADMIN_PASSWORD}"`}`);
+async function createFirstAdmin(db, config) {
+  if (hasAdmin(db)) return;
+  const { admin, isProduction } = config;
+  if (isProduction && !admin.password) {
+    fail('no admin account exists yet. Set RED_ADMIN_EMAIL and RED_ADMIN_PASSWORD so the first admin is not created with a guessable password.');
   }
 
-  const maxFileMb = Number(process.env.RED_MAX_FILE_MB);
+  // Locally, a random password is printed once and must be replaced at first sign-in.
+  const generated = !admin.password;
+  const password = admin.password || newPassword();
+  await ensureAdmin(db, createPasswordHasher({ pepper: config.pepper }), { ...admin, password, mustChangePassword: generated });
+  console.log(generated
+    ? `Created admin account ${admin.email} with the one-time password: ${password}\nYou'll be asked to choose a new password when you first sign in.`
+    : `Created admin account ${admin.email}`);
+}
+
+async function main() {
+  let config;
+  try {
+    config = loadConfig();
+  } catch (err) {
+    if (err instanceof ConfigError) fail(err.message);
+    throw err;
+  }
+
+  const db = openDb(config.dbFile);
+  await createFirstAdmin(db, config);
+
+  // PostgreSQL when CRIMGUARD_DATABASE_URL is set and reachable, otherwise the SQLite copy.
+  // Red's accounts and projects stay in red.db either way, so a failure here doesn't stop the app.
+  const crimguard = await connectCrimGuard().catch((err) => {
+    console.error(`CrimGuard risk database unavailable: ${err.message}`);
+    return null;
+  });
+  if (crimguard) console.log(`CrimGuard risk database: ${describeConnection(crimguard)}`);
+
   const server = createApp({
     db,
-    secureCookies: process.env.RED_SECURE_COOKIES === '1',
-    maxFileBytes: maxFileMb > 0 ? maxFileMb * 1024 * 1024 : undefined,
+    pepper: config.pepper,
+    secureCookies: config.secureCookies,
+    trustProxy: config.trustProxy,
+    maxFileBytes: config.maxFileBytes,
   });
-  server.listen(PORT, HOST, () => {
+  server.listen(config.port, config.host, () => {
     console.log(`Red is running at http://localhost:${server.address().port}`);
   });
 
-  // Platforms send SIGTERM before replacing a container: finish in-flight requests, then close the database.
+  // Platforms send SIGTERM before replacing a container: finish in-flight requests, then close the databases.
   const shutdown = (signal) => {
     console.log(`${signal} received, shutting down`);
-    server.close(() => {
+    server.close(async () => {
       db.close();
+      await crimguard?.close();
       process.exit(0);
     });
     server.closeIdleConnections();

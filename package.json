@@ -1,15 +1,20 @@
 {
   "name": "red",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "description": "Red: private projects per account, separate user and admin logins, admin-managed roles.",
   "main": "src/server.js",
   "engines": {
-    "node": ">=22.13"
+    "node": ">=24.7"
   },
   "scripts": {
-    "start": "node src/server.js",
-    "test": "node --test",
-    "build:demo": "node scripts/demo/build.js"
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "test": "node --test \"test/**/*.test.js\"",
+    "build:demo": "node scripts/demo/build.js",
+    "db:status": "node --env-file-if-exists=.env scripts/db/status.js",
+    "db:sqlite": "node --env-file-if-exists=.env scripts/db/build-sqlite.js"
+  },
+  "optionalDependencies": {
+    "pg": "^8.23.0"
   }
 }

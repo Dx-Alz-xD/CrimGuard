@@ -17,6 +17,7 @@
     <nav class="app-nav" aria-label="Sections">
       <a href="#projects" data-tab="projects">My projects</a>
       <a href="#people" data-tab="people">People &amp; roles</a>
+      <a href="#activity" data-tab="activity">Activity</a>
     </nav>
     <div class="topbar-end">
       <span class="role-badge is-admin">Admin</span>
@@ -32,6 +33,7 @@
       <span class="menu-name" id="menu-name"></span>
       <span class="menu-email" id="menu-email"></span>
     </div>
+    <button class="menu-item" type="button" id="edit-profile">Profile</button>
     <button class="menu-item" type="button" id="change-password">Change password</button>
     <button class="menu-item" type="button" id="logout">Log out</button>
   </div>
@@ -73,11 +75,46 @@
             <th scope="col">Role</th>
             <th scope="col" class="num">Projects</th>
             <th scope="col">Joined</th>
+            <th scope="col">Last sign-in</th>
             <th scope="col"><span class="sr-only">Actions</span></th>
           </tr>
         </thead>
         <tbody id="user-rows"></tbody>
       </table>
+    </div>
+  </main>
+
+  <main class="page" data-panel="activity" hidden>
+    <header class="page-header">
+      <div>
+        <h1>Activity</h1>
+        <p>Sign-ins, password changes and account changes. Entries are kept for 12 months.</p>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <div class="filter" id="activity-filter" role="group" aria-label="Filter activity">
+        <button type="button" data-kind="all" aria-pressed="true">All</button>
+        <button type="button" data-kind="attention" aria-pressed="false">Needs attention <span class="count"></span></button>
+      </div>
+    </div>
+
+    <div class="surface table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th scope="col">Event</th>
+            <th scope="col">Account</th>
+            <th scope="col">Done by</th>
+            <th scope="col">IP address</th>
+            <th scope="col">When</th>
+          </tr>
+        </thead>
+        <tbody id="activity-rows"></tbody>
+      </table>
+    </div>
+    <div class="load-more">
+      <button class="btn btn-secondary" type="button" id="activity-more" hidden>Show older activity</button>
     </div>
   </main>
 

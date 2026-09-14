@@ -3,19 +3,18 @@
 A project workspace with two separate logins, one for users and one for admins.
 Every account has its own private projects, and admins decide who gets which role.
 
-- **User login** (`/login`): create, edit and track your own projects, and change
-  your own password.
-- **Admin login** (`/admin/login`): your own projects, plus **Users & roles**, where
-  you can add people with a role, change roles, set passwords and delete accounts.
+- **User login** (`/login`): create, edit and track your own projects, edit your
+  profile, and change your own password.
+- **Admin login** (`/admin/login`): your own projects, plus **People & roles**, where
+  you can add people with a role, change roles, reset passwords and delete accounts,
+  and **Activity**, a log of sign-ins and account changes.
 
-No npm dependencies. Red uses Node's built-in `node:sqlite`, so it only needs
-**Node.js 22.13 or newer** (developed on Node 24).
+No npm dependencies. Red uses Node's built-in `node:sqlite` and `crypto.argon2`, so it
+only needs **Node.js 24.7 or newer** (developed on Node 26).
 
 ---
 
 ## Run locally
-
-From the folder containing `package.json`:
 
 ```bash
 npm start
@@ -23,15 +22,9 @@ npm start
 
 Open <http://localhost:3000>.
 
-On first start Red creates an admin account and prints it:
-
-| Email             | Password     |
-| ----------------- | ------------ |
-| `admin@red.local` | `admin12345` |
-
-That default exists only for local use. Change it from the account menu in the
-admin console's top bar. In production (`NODE_ENV=production`) Red refuses to
-start until you set `RED_ADMIN_PASSWORD`.
+On first start Red creates `data/` with the database and a development password pepper,
+and prints a **one-time password** for the admin account `admin@red.local`. Sign in at
+`/admin/login` with it, and you'll be asked to choose your own password straight away.
 
 ```bash
 npm test
@@ -57,30 +50,47 @@ npm run build:demo
 
 | Role  | Signs in at    | Can do                                                          |
 | ----- | -------------- | --------------------------------------------------------------- |
-| User  | `/login`       | Manage their own projects, change their own password            |
-| Admin | `/admin/login` | Manage their own projects, add people, assign roles, set passwords, delete accounts |
+| User  | `/login`       | Manage their own projects and profile, change their own password |
+| Admin | `/admin/login` | All of the above, plus add people, assign roles, reset passwords, delete accounts, read the activity log |
 
 - **Sign-up always creates a User.** Only an admin can make someone an Admin,
   either by adding them with that role or by changing their role later.
 - **Each portal only accepts its own role.** A User signing in at the admin
   login, or an Admin at the user login, is told to use the other one.
-- **Role changes apply immediately**, including to people who are already signed
-  in. Nobody needs to log out and back in.
+- **Role changes apply immediately**, including to people who are already signed in.
 - **Admins can't change their own role or delete their own account**, so there
   is always at least one admin.
-- **Everyone can change their own password** from the account menu in the top
-  bar. It asks for the current password first, keeps you signed in on that
-  device, and signs out your other devices.
-- **When an admin sets someone else's password, that person is signed out
-  everywhere** and needs the new password to get back in.
-- **Deleting a person also deletes their projects, files and sessions.** It can't be undone.
+- **Passwords an admin chooses are temporary.** Someone added by an admin, or whose
+  password an admin reset, must choose their own password when they next sign in.
+  Until they do, the API refuses everything except changing the password or logging out.
+- **Changing your password** asks for the current one, gives this device a new
+  session, and signs out your other devices.
+- **When an admin resets someone's password, that person is signed out everywhere.**
+- **Deleting a person also deletes their profile, projects, files and sessions.** It can't be undone.
 - **Projects hold files.** Open a project to upload files (drag and drop works), then
   download, rename, replace with a new version, or delete them. Files are as private
-  as the project: nobody else can reach them, admins included. Each file can be up to
-  10 MB (set `RED_MAX_FILE_MB` to change it), and names are unique within a project.
-  Files are stored in the SQLite database, so the `/data` volume holds everything.
+  as their project: nobody else can reach them, admins included. Each file can be up
+  to 10 MB (set `RED_MAX_FILE_MB` to change it), names are unique within a project,
+  and the contents are stored in the database, so the data volume holds everything.
 - **Projects are private.** Admins manage roles, not other people's projects,
   and see only how many projects each person has.
+
+---
+
+## Security
+
+| Area | What Red does |
+| ---- | ------------- |
+| Password storage | HMAC-SHA-256 with a secret pepper, then Argon2id (64 MiB, t=3, p=4). Hashes sit in their own table. Older scrypt hashes are upgraded at sign-in. See [`database/README.md`](database/README.md#how-passwords-are-stored). |
+| Password policy | 12 to 256 characters, no composition rules, common and sequential passwords rejected, can't be based on your name or email. |
+| Brute force | After 5 failed sign-ins for one email in 15 minutes, that email is paused for 15 minutes. Limits also apply per IP address, to sign-ups, and to wrong current passwords. Unknown emails get the same response and timing as wrong passwords. |
+| Sessions | 256-bit random tokens, stored only as SHA-256. New token at every sign-in and password change. User sessions last 24 hours idle / 7 days total; admin sessions 2 hours idle / 12 hours total. At most 10 per account. |
+| Cookies | `HttpOnly`, `SameSite=Strict`. Over HTTPS: `Secure` with the `__Host-` prefix, and cookies without the prefix are ignored. |
+| CSRF | Writes must be JSON, and requests whose `Origin` or `Sec-Fetch-Site` is another site are refused. |
+| Headers | Strict CSP (`default-src 'none'`), HSTS over HTTPS, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, COOP/CORP, Permissions-Policy. |
+| Input | Size-limited JSON bodies, validated fields, control and bidi-override characters removed from names and text. All user text is rendered with `textContent`, never as HTML. |
+| Audit | Security events in `audit_log`, visible to admins under **Activity**. No secrets are logged. |
+| Server | Request and header timeouts, database and pepper files readable by the server's user only, no default admin password. |
 
 ---
 
@@ -92,83 +102,110 @@ accounts and projects.
 
 ### Environment variables
 
-| Variable             | Default                  | Notes                                                                 |
-| -------------------- | ------------------------ | --------------------------------------------------------------------- |
-| `RED_ADMIN_EMAIL`    | `admin@red.local`        | First admin's email. Only used when no admin exists yet.              |
-| `RED_ADMIN_PASSWORD` | none (required in prod)  | First admin's password, at least 8 characters.                        |
-| `RED_ADMIN_NAME`     | `Red Admin`              |                                                                       |
-| `PORT`               | `3000`                   | Most platforms set this for you.                                      |
-| `HOST`               | `0.0.0.0` in the image   | `127.0.0.1` when run with `npm start` outside production.             |
-| `RED_DB`             | `/data/red.db` in image  | Path to the SQLite file.                                              |
-| `RED_SECURE_COOKIES` | off                      | Set to `1` to always mark cookies Secure. Behind an HTTPS proxy Red detects this on its own. |
+| Variable                   | Default                 | Notes |
+| -------------------------- | ----------------------- | ----- |
+| `RED_PASSWORD_PEPPER`      | none (required in prod) | Secret mixed into every password hash, at least 32 characters. Generate with `openssl rand -base64 48`. **Keep it out of database backups, and never change or lose it:** doing so invalidates every password. |
+| `RED_PASSWORD_PEPPER_FILE` | none                    | Read the pepper from a file instead, e.g. a Docker secret. |
+| `RED_ADMIN_EMAIL`          | `admin@red.local`       | First admin's email. Only used when no admin exists yet. |
+| `RED_ADMIN_PASSWORD`       | none (required in prod) | First admin's password, at least 12 characters. |
+| `RED_ADMIN_NAME`           | `Red Admin`             | |
+| `RED_TRUST_PROXY`          | off                     | Set to `1` behind exactly one reverse proxy, so rate limits and the activity log use the client address from `X-Forwarded-For`. Leave off otherwise, or clients could spoof it. |
+| `RED_MAX_FILE_MB`    | `10`                     | Largest file someone can upload to a project, in megabytes (up to 100). |
+| `RED_SECURE_COOKIES`       | off                     | Set to `1` to always mark cookies Secure. Behind an HTTPS proxy Red detects this on its own. |
+| `PORT`                     | `3000`                  | Most platforms set this for you. |
+| `HOST`                     | `0.0.0.0` in the image  | `127.0.0.1` when run with `npm start` outside production. |
+| `RED_DB`                   | `/data/red.db` in image | Path to the SQLite file. `data/red.db` locally. |
 
 The admin variables only matter on the very first start. After that, manage
-people from **Users & roles** in the admin console.
+people from **People & roles** in the admin console.
 
 ### Any server with Docker
 
 ```bash
-RED_ADMIN_EMAIL=you@example.com RED_ADMIN_PASSWORD='a-long-password' docker compose up -d --build
+RED_ADMIN_EMAIL=you@example.com \
+RED_ADMIN_PASSWORD='a-long-admin-password' \
+RED_PASSWORD_PEPPER="$(openssl rand -base64 48)" \
+docker compose up -d --build
 ```
 
-Put it behind HTTPS (Caddy, nginx, or your platform's proxy). Session cookies
-are marked `Secure` automatically when the proxy sends `X-Forwarded-Proto: https`.
+Save the pepper somewhere safe (a password manager or secrets store) before you
+run this. Put Red behind HTTPS (Caddy, nginx, or your platform's proxy). Session
+cookies become `Secure` and `__Host-` prefixed when the proxy sends
+`X-Forwarded-Proto: https`.
 
 ### Railway, Render, Fly.io and similar
 
 1. Point the service at the folder containing the `Dockerfile`. It builds from that.
 2. Add a persistent volume or disk mounted at `/data`.
-3. Set `RED_ADMIN_EMAIL` and `RED_ADMIN_PASSWORD`.
-4. Set the health check path to `/healthz`.
+3. Set `RED_PASSWORD_PEPPER`, `RED_ADMIN_EMAIL` and `RED_ADMIN_PASSWORD` as secrets.
+4. Set `RED_TRUST_PROXY=1`.
+5. Set the health check path to `/healthz`.
 
 Run a single instance. SQLite lives on one machine's disk, so scaling to
 several replicas would give each one its own separate database.
+
+### Upgrading from an earlier Red
+
+Start the new version against your existing database. Migrations move password
+hashes into `user_credentials`, add profiles, the activity log and throttling, and
+rebuild the sessions table, which signs everyone out once. Existing passwords keep
+working and are upgraded to Argon2id as people sign in. In production, set
+`RED_PASSWORD_PEPPER` first.
 
 ---
 
 ## Layout
 
 ```
-src/server.js        startup: config checks, first admin, graceful shutdown
-src/app.js           HTTP server: pages, JSON API, sessions, role checks, files
-src/security/        scrypt password hashing, session tokens, cookies
-src/db/              SQLite schema (users, sessions, projects, project_files)
-public/*.html        landing, both logins, sign-up, dashboard, admin console
-public/static/       app.js (all client code), styles.css, favicon
-test/helpers.js      end-to-end API tests (node --test)
-scripts/demo/        build.js and demo-api.js, which make the static demo
-demo/                the generated static demo (npm run build:demo)
-database/crimguard/  CrimGuard PostgreSQL schema (separate design, not used by the app)
-Dockerfile           production image, runs as non-root, health check
-docker-compose.yml   one-command self-hosting with a data volume
+src/
+  server.js              startup: config checks, migrations, first admin, graceful shutdown
+  app.js                 HTTP server: security headers, CSRF checks, routing, housekeeping
+  config.js              environment variables, session lifetimes, rate limits
+  validation.js          input cleaning and validation shared by the routes
+  routes/                auth.js (sign-up, login, password), profile.js, projects.js, files.js,
+                         admin.js (people, roles, activity), pages.js (HTML, static, health)
+  security/              passwords.js (pepper + Argon2id), password-policy.js, sessions.js,
+                         throttle.js, tokens.js, headers.js
+  http/                  router, request parsing, responses, cookies, errors
+  db/                    index.js (open, pragmas), migrate.js, and one query module per area:
+                         users.js, sessions.js, projects.js, files.js, audit.js
+database/
+  web/migrations/        SQLite schema for the website, applied on start
+  crimguard/             PostgreSQL schema for the CrimGuard detection platform
+public/                  pages and static/ (app.js, styles.css, favicon)
+test/                    node --test suites: auth, passwords, profile, projects, files, admin,
+                         security, migrations
+scripts/demo/            build.js and demo-api.js, which make the static demo
+demo/                    the generated static demo (npm run build:demo)
+data/                    local database and development pepper (git-ignored)
+Dockerfile               production image, runs as non-root, health check
+docker-compose.yml       one-command self-hosting with a data volume
 ```
 
 ### API
 
-| Method & path                        | Who   |
-| ------------------------------------ | ----- |
-| `POST /api/signup`                   | anyone, creates a User |
-| `POST /api/login` `{portal}`         | anyone |
-| `POST /api/logout`, `GET /api/me`    | signed in |
-| `PATCH /api/me/password` `{currentPassword, newPassword}` | signed in, own account; signs out other devices |
-| `GET/POST /api/projects`             | signed in, own projects only |
-| `PATCH/DELETE /api/projects/:id`     | signed in, own projects only |
-| `GET /api/admin/users`               | admin |
-| `POST /api/admin/users` `{role}`     | admin, adds a person |
-| `PATCH /api/admin/users/:id/role`    | admin, not their own account |
-| `PATCH /api/admin/users/:id/password`| admin, any account; signs that account out elsewhere |
-| `DELETE /api/admin/users/:id`        | admin, not their own account |
-| `GET /api/projects/:id/files`        | signed in, own projects only |
-| `POST /api/projects/:id/files`       | own projects; raw bytes, `X-File-Name` (URL-encoded) |
+| Method & path                          | Who |
+| -------------------------------------- | --- |
+| `POST /api/signup`                     | anyone, creates a User |
+| `POST /api/login` `{portal}`           | anyone |
+| `POST /api/logout`, `GET /api/me`      | signed in |
+| `PATCH /api/me/password` `{currentPassword, newPassword}` | signed in; new session here, signs out other devices |
+| `GET/PATCH /api/me/profile` `{name, jobTitle, organization, bio}` | signed in, own profile |
+| `GET/POST /api/projects`               | signed in, own projects only |
+| `PATCH/DELETE /api/projects/:id`       | signed in, own projects only |
+| `GET /api/projects/:id/files`          | signed in, own projects only |
+| `POST /api/projects/:id/files`         | own projects; raw bytes with `X-File-Name` (URL-encoded) |
 | `GET /api/projects/:id/files/:fileId/download` | own projects; always sent as a download |
 | `PATCH /api/projects/:id/files/:fileId` `{name}` | own projects; rename |
 | `PUT /api/projects/:id/files/:fileId/content` | own projects; raw bytes, replaces the contents |
 | `DELETE /api/projects/:id/files/:fileId` | own projects |
-| `GET /healthz`                       | anyone |
+| `GET /api/admin/users`                 | admin |
+| `POST /api/admin/users` `{role}`       | admin, adds a person who must then choose a password |
+| `PATCH /api/admin/users/:id/role`      | admin, not their own account |
+| `PATCH /api/admin/users/:id/password`  | admin; signs that account out everywhere |
+| `DELETE /api/admin/users/:id`          | admin, not their own account |
+| `GET /api/admin/audit?limit&before`    | admin, newest first |
+| `GET /healthz`                         | anyone |
 
-### Security notes
-
-Passwords are hashed with scrypt. Only a SHA-256 hash of each session token is
-stored, and cookies are `HttpOnly` and `SameSite=Strict`. All writes must be
-JSON, which blocks cross-site form posts. A strict Content-Security-Policy is
-set, and all user text is rendered with `textContent`, never as HTML.
+Errors are `{ "error": "message" }`, plus a `code` for `password_change_required` (403)
+and `rate_limited` (429, with `Retry-After`).
