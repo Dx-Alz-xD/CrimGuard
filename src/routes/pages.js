@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { ROOT_DIR } = require('../config');
 const { redirect, sendHtml, sendJson, serveStatic } = require('../http/response');
+const { isPrivileged } = require('../security/access');
 const { homeFor } = require('./auth');
 
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
@@ -17,11 +18,12 @@ const PAGES = {
   '/dashboard': 'dashboard.html',
   '/admin': 'admin.html',
   '/admin/risk': 'risk.html',
+  '/crimguard': 'crimguard.html',
   '/privacy': 'privacy.html',
 };
 
-// Pages that are the admin console, and so count as admin_panel_access.
-const ADMIN_PAGES = new Set(['/admin', '/admin/risk']);
+// Pages only admins and the CEO can open, and so count as admin_panel_access.
+const ADMIN_PAGES = new Set(['/admin', '/admin/risk', '/crimguard']);
 
 const NOT_FOUND_HTML = `<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><meta name="color-scheme" content="light dark">
@@ -40,14 +42,15 @@ function pageRedirect(pathname, user) {
     case '/signup':
       return user ? homeFor(user) : null;
     case '/admin/login':
-      return user?.role === 'admin' ? '/admin' : null;
+      return user && isPrivileged(user.role) ? '/admin' : null;
     case '/dashboard':
       if (!user) return '/login';
-      return user.role === 'admin' ? '/admin' : null;
+      return isPrivileged(user.role) ? '/admin' : null;
     case '/admin':
     case '/admin/risk':
+    case '/crimguard':
       if (!user) return '/admin/login';
-      return user.role === 'admin' ? null : '/dashboard';
+      return isPrivileged(user.role) ? null : '/dashboard';
     default:
       return null;
   }

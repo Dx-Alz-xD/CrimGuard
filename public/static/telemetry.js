@@ -29,10 +29,10 @@
 
   // Only signed-in pages collect anything; the login and sign-up pages have no session.
   const page = document.body.dataset.page;
-  if (page !== 'dashboard' && page !== 'admin' && page !== 'risk') return;
-  // The admin console shows other people's account records, so anything captured there is
-  // capturing confidential material.
-  const sensitiveScreen = page === 'admin' || page === 'risk';
+  if (!['dashboard', 'admin', 'risk', 'crimguard'].includes(page)) return;
+  // The admin console and CrimGuard show other people's account records, so anything captured
+  // there is capturing confidential material.
+  const sensitiveScreen = page === 'admin' || page === 'risk' || page === 'crimguard';
 
   // ---- what a window accumulates --------------------------------------------------
 

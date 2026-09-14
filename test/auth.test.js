@@ -11,10 +11,11 @@ after(() => app.close());
 
 // --- sign-up and the two login portals ----------------------------------------
 
-test('sign-up always creates a plain user, even if the request asks for admin', async () => {
+test('sign-up always creates an intern, even if the request asks for admin', async () => {
   const res = await app.browser()('POST', '/api/signup', { name: 'Sneaky', email: app.freshEmail(), password: PASSWORD, role: 'admin' });
   assert.equal(res.status, 201);
-  assert.equal(res.body.user.role, 'user');
+  assert.equal(res.body.user.role, 'intern');
+  assert.equal(res.body.user.clearance, 1);
   assert.equal(res.body.redirect, '/dashboard');
 });
 

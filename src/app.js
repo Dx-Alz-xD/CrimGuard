@@ -1,7 +1,7 @@
 'use strict';
 
 const http = require('node:http');
-const { RATE_LIMITS, SESSION_POLICY } = require('./config');
+const { DEFAULT_MAX_FILE_BYTES, RATE_LIMITS, SESSION_POLICY } = require('./config');
 const { createStores } = require('./db');
 const { HttpError } = require('./http/errors');
 const { isHttps, clientIp, userAgent } = require('./http/request');
@@ -14,8 +14,10 @@ const { createThrottle } = require('./security/throttle');
 const { registerAuthRoutes } = require('./routes/auth');
 const { registerProfileRoutes } = require('./routes/profile');
 const { registerProjectRoutes } = require('./routes/projects');
+const { registerFileRoutes } = require('./routes/files');
 const { registerAdminRoutes } = require('./routes/admin');
 const { registerTelemetryRoutes } = require('./routes/telemetry');
+const { registerCrimGuardRoutes } = require('./routes/crimguard');
 const { createPageHandler } = require('./routes/pages');
 const { createTelemetry } = require('./telemetry');
 
@@ -24,13 +26,14 @@ const HOUSEKEEPING_INTERVAL_MS = 60 * 60 * 1000;
 const RISK_INTERVAL_MS = 15 * 60 * 1000;
 
 // State-changing API calls must come from our own pages.
-//  - They must be JSON. A cross-site page can't send application/json without a CORS preflight,
+//  - They must be JSON, or raw bytes for file uploads. A cross-site page can't send application/json or
+//    application/octet-stream without a CORS preflight,
 //    which this server never grants.
 //  - Browsers label requests with Sec-Fetch-Site; anything not same-origin is refused. Browsers too old
 //    to send it are checked by comparing Origin with Host instead. Sec-Fetch-Site is preferred because
 //    a reverse proxy that rewrites Host would make every same-origin request look cross-origin.
 //  - Session cookies are SameSite=Strict on top of that.
-function assertSameOrigin(req, { trustProxy }) {
+function assertSameOrigin(req, { trustProxy, binary = false }) {
   const site = req.headers['sec-fetch-site'];
   if (site) {
     if (site !== 'same-origin' && site !== 'none') throw new HttpError(403, 'Cross-site requests are not allowed.');
@@ -42,8 +45,9 @@ function assertSameOrigin(req, { trustProxy }) {
     try { originHost = new URL(origin).host; } catch { /* "null" or malformed */ }
     if (!originHost || originHost !== expectedHost) throw new HttpError(403, 'Cross-site requests are not allowed.');
   }
-  if (!String(req.headers['content-type']).startsWith('application/json')) {
-    throw new HttpError(415, 'Requests must be sent as JSON.');
+  const expected = binary ? 'application/octet-stream' : 'application/json';
+  if (!String(req.headers['content-type']).startsWith(expected)) {
+    throw new HttpError(415, binary ? 'Send the file as application/octet-stream.' : 'Requests must be sent as JSON.');
   }
 }
 
@@ -57,6 +61,7 @@ function createApp({
   sessionPolicy = SESSION_POLICY,
   riskInterval = RISK_INTERVAL_MS,
   now = Date.now,
+  maxFileBytes = DEFAULT_MAX_FILE_BYTES,
 }) {
   const stores = createStores(db);
   const passwords = createPasswordHasher({ pepper });
@@ -65,14 +70,16 @@ function createApp({
   // Behavioural telemetry into the CrimGuard risk database. Without that database this is a
   // no-op object, so every route below behaves the same whether or not it is connected.
   const telemetry = createTelemetry(crimguard);
-  const deps = { stores, sessions, passwords, throttle, limits: rateLimits, telemetry, crimguard };
+  const deps = { stores, sessions, passwords, throttle, limits: rateLimits, telemetry, crimguard, maxFileBytes, sessionPolicy, now };
 
   const router = createRouter();
   registerAuthRoutes(router, deps);
   registerProfileRoutes(router, deps);
   registerProjectRoutes(router, deps);
+  registerFileRoutes(router, deps);
   registerAdminRoutes(router, deps);
   registerTelemetryRoutes(router, deps);
+  registerCrimGuardRoutes(router, deps);
   const handlePage = createPageHandler({ db, sessions, telemetry });
 
   async function route(req, res) {
@@ -94,8 +101,9 @@ function createApp({
       return handlePage(req, res, pathname, client);
     }
 
-    if (method !== 'GET' && method !== 'HEAD') assertSameOrigin(req, { trustProxy });
+    // Matched first only to know whether the route takes raw bytes; the same-origin checks still come before 404/405.
     const found = router.match(method === 'HEAD' ? 'GET' : method, pathname);
+    if (method !== 'GET' && method !== 'HEAD') assertSameOrigin(req, { trustProxy, binary: found?.options?.body === 'binary' });
     if (!found) throw new HttpError(404, 'Not found.');
     if (found.allowed) throw new HttpError(405, 'Method not allowed.', { headers: { Allow: found.allowed.join(', ') } });
 
@@ -117,7 +125,7 @@ function createApp({
   // session. Both are recorded here rather than in each route.
   function recordRefusal(req, status, client) {
     try {
-      if (status === 403 && req.url.startsWith('/api/admin/')) {
+      if (status === 403 && (req.url.startsWith('/api/admin/') || req.url.startsWith('/api/crimguard/'))) {
         const user = sessions.current(req);
         if (user) telemetry.onViolation({ user, tokenHash: req.sessionTokenHash, client, path: new URL(req.url, 'http://red.local').pathname });
       } else if (status === 401) {

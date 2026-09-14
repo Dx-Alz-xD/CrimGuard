@@ -1,14 +1,17 @@
 # Red
 
-A project workspace with two separate logins, one for users and one for admins.
-Every account has its own private projects, and admins decide who gets which role.
+A project workspace with two separate logins: one for interns and employees, and the
+admin console for admins and the CEO. Every account has its own projects and files, and
+admins and the CEO decide who holds which role and who can open which file.
 
-- **User login** (`/login`): create, edit and track your own projects, edit your
-  profile, and change your own password.
+- **User login** (`/login`): create, edit and track your own projects, upload files to
+  them, open files shared with you under **Shared with me**, edit your profile, and
+  change your own password.
 - **Admin login** (`/admin/login`): your own projects, plus **People & roles**, where
-  you can add people with a role, change roles, reset passwords and delete accounts,
-  **Activity**, a log of sign-ins and account changes, and **Risk**, the insider-risk
-  console described below.
+  you add people, change roles, reset passwords and delete accounts, and the CEO creates
+  roles; **Activity**, a log of sign-ins and account changes; **CrimGuard**, a live
+  dashboard of everyone's projects, files, devices and activity; and **Risk**, the
+  insider-risk console described below.
 
 Red also scores how each account behaves against the 100 variables in the CrimGuard
 feature catalog, to catch data being taken out of it. Everyone can read their own score
@@ -29,8 +32,9 @@ npm start
 Open <http://localhost:3000>.
 
 On first start Red creates `data/` with the database and a development password pepper,
-and prints a **one-time password** for the admin account `admin@red.local`. Sign in at
-`/admin/login` with it, and you'll be asked to choose your own password straight away.
+and prints a **one-time password** for the admin account `admin@red.local` and another
+for the CEO account `ceo@red.local`. Sign in with either at `/admin/login`, and you'll be
+asked to choose your own password straight away.
 
 ```bash
 npm test
@@ -60,27 +64,76 @@ npm run build:demo
 
 ## How roles work
 
-| Role  | Signs in at    | Can do                                                          |
-| ----- | -------------- | --------------------------------------------------------------- |
-| User  | `/login`       | Manage their own projects and profile, change their own password |
-| Admin | `/admin/login` | All of the above, plus add people, assign roles, reset passwords, delete accounts, read the activity log |
+Every role has a **clearance** from 1 to 5, and every file a **confidentiality** on the
+same scale: 1 Open, 2 Internal, 3 Confidential, 4 Restricted, 5 Secret.
 
-- **Sign-up always creates a User.** Only an admin can make someone an Admin,
-  either by adding them with that role or by changing their role later.
-- **Each portal only accepts its own role.** A User signing in at the admin
-  login, or an Admin at the user login, is told to use the other one.
+| Role     | Clearance | Signs in at    | Can do |
+| -------- | --------- | -------------- | ------ |
+| Intern   | 1         | `/login`       | Their own projects and files, files shared with them, their profile and password |
+| Employee | 2         | `/login`       | The same |
+| Admin    | 4         | `/admin/login` | All of the above, plus add people and give them any role up to Admin, reset passwords, delete accounts, read the activity log, open anyone's files up to Restricted and choose who can see them, and use CrimGuard |
+| CEO      | 5         | `/admin/login` | Everything an admin can do, for every file including Secret ones, plus create, change and delete roles and make someone CEO |
+
+- **The CEO account is created on first start**, the same way as the first admin (see
+  [Run locally](#run-locally) and the `RED_CEO_*` variables).
+- **Sign-up always creates an Intern.** Admins and the CEO give out roles up to their own
+  clearance, so only the CEO can make someone CEO.
+- **Nobody can act on an account with more clearance than their own.** An admin can't
+  change the CEO's role, reset the CEO's password or delete the CEO.
+- **The CEO can add roles**, such as Contractors at clearance 1 or Analysts at 3. Roles
+  the CEO adds are for sharing files and never open the admin console. Built-in roles
+  can't be changed, and a role can only be deleted once nobody holds it.
+- **Each portal only accepts its own roles.** Admins and the CEO sign in at the admin
+  login and everyone else at the user login; the wrong one says which to use.
 - **Role changes apply immediately**, including to people who are already signed in.
-- **Admins can't change their own role or delete their own account**, so there
-  is always at least one admin.
+- **Nobody can change their own role or delete their own account**, so there is always
+  at least one admin and one CEO.
 - **Passwords an admin chooses are temporary.** Someone added by an admin, or whose
   password an admin reset, must choose their own password when they next sign in.
   Until they do, the API refuses everything except changing the password or logging out.
 - **Changing your password** asks for the current one, gives this device a new
   session, and signs out your other devices.
 - **When an admin resets someone's password, that person is signed out everywhere.**
-- **Deleting a person also deletes their profile, projects and sessions.** It can't be undone.
-- **Projects are private.** Admins manage roles, not other people's projects,
-  and see only how many projects each person has.
+- **Deleting a person also deletes their profile, projects, files and sessions.** It can't be undone.
+- **Projects hold files.** Open a project to upload files, as many at once as you like
+  (drag and drop works), then download, rename, replace with a new version, or delete
+  them. Each file can be up to 10 MB (set `RED_MAX_FILE_MB` to change it), names are
+  unique within a project, and the contents are stored in the database, so the data
+  volume holds everything.
+
+## Who can open a file
+
+- **Its owner always can, and so can the CEO.** Admins can open any file up to
+  Restricted. Everyone else needs the file shared with them.
+- **Admins and the CEO share files** from the **Access** button on a file, in a project
+  or in CrimGuard. Sharing with a **role** lets everyone in it open the file while the
+  role's clearance covers the file's confidentiality: a Confidential file shared with
+  Employees stays closed to them until it is lowered to Internal. Sharing with a
+  **person** lets them open it at any confidentiality.
+- **New files are Internal and shared with nobody.** Existing files became Internal
+  when roles arrived.
+- **Only the CEO can mark a file Secret**, or change who can see a Secret file. An admin
+  the CEO shares a Secret file with can open it, but not change who else can.
+- **A file someone can't see is "not found"** to them, so its existence isn't given away.
+- **The rule is written once**, as SQL in `src/db/files.js`; every list, download and
+  dashboard goes through it. The rest of the access rules are in `src/security/access.js`.
+- **Changing who can see a file, and downloading someone else's file, go in the
+  activity log.** File names never do.
+
+## CrimGuard dashboard
+
+`/crimguard`, for admins and the CEO, carries CrimGuard's own name. It lists everyone
+with an account, with their role, projects, files, storage, whether they are online and,
+when the risk database is connected, their latest risk score. Choosing someone opens their
+record: profile, every project and file with its confidentiality and sharing, files shared
+with them, the devices they are signed in on, their activity and their risk trend.
+
+- **It stays live.** The list refreshes every 15 seconds and the open record every 5,
+  while the tab is visible; a record only redraws when something in it changed.
+- **Files above your clearance are counted, never named**, so an admin can see that
+  someone holds Secret files without learning what they are.
+- **Looking is recorded.** Opening someone's record goes in the activity log, at most
+  once every ten minutes per viewer and person, so leaving the page open doesn't flood it.
 
 ---
 
@@ -91,13 +144,14 @@ npm run build:demo
 | Password storage | HMAC-SHA-256 with a secret pepper, then Argon2id (64 MiB, t=3, p=4). Hashes sit in their own table. Older scrypt hashes are upgraded at sign-in. See [`database/README.md`](database/README.md#how-passwords-are-stored). |
 | Password policy | 12 to 256 characters, no composition rules, common and sequential passwords rejected, can't be based on your name or email. |
 | Brute force | After 5 failed sign-ins for one email in 15 minutes, that email is paused for 15 minutes. Limits also apply per IP address, to sign-ups, and to wrong current passwords. Unknown emails get the same response and timing as wrong passwords. |
-| Sessions | 256-bit random tokens, stored only as SHA-256. New token at every sign-in and password change. User sessions last 24 hours idle / 7 days total; admin sessions 2 hours idle / 12 hours total. At most 10 per account. |
+| Sessions | 256-bit random tokens, stored only as SHA-256. New token at every sign-in and password change. Intern and employee sessions last 24 hours idle / 7 days total; admin and CEO sessions 2 hours idle / 12 hours total. At most 10 per account. |
 | Cookies | `HttpOnly`, `SameSite=Strict`. Over HTTPS: `Secure` with the `__Host-` prefix, and cookies without the prefix are ignored. |
 | CSRF | Writes must be JSON, and requests whose `Origin` or `Sec-Fetch-Site` is another site are refused. |
 | Headers | Strict CSP (`default-src 'none'`), HSTS over HTTPS, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, COOP/CORP, Permissions-Policy. |
 | Input | Size-limited JSON bodies, validated fields, control and bidi-override characters removed from names and text. All user text is rendered with `textContent`, never as HTML. |
-| Audit | Security events in `audit_log`, visible to admins under **Activity**. No secrets are logged. |
-| Server | Request and header timeouts, database and pepper files readable by the server's user only, no default admin password. |
+| Audit | Security events in `audit_log`, visible to admins and the CEO under **Activity**: sign-ins, role and password changes, roles created or changed, changes to who can see a file, downloads of other people's files, and records opened in CrimGuard. No secrets or file names are logged. |
+| Access | Roles with clearance and files with confidentiality, checked on the server for every list and download (see [Who can open a file](#who-can-open-a-file)). |
+| Server | Request and header timeouts, database and pepper files readable by the server's user only, no default admin or CEO password. |
 
 ---
 
@@ -116,7 +170,11 @@ accounts and projects.
 | `RED_ADMIN_EMAIL`          | `admin@red.local`       | First admin's email. Only used when no admin exists yet. |
 | `RED_ADMIN_PASSWORD`       | none (required in prod) | First admin's password, at least 12 characters. |
 | `RED_ADMIN_NAME`           | `Red Admin`             | |
+| `RED_CEO_EMAIL`            | `ceo@red.local`         | The CEO's email. Only used when no CEO exists yet, and must differ from `RED_ADMIN_EMAIL`. |
+| `RED_CEO_PASSWORD`         | none (required in prod) | The CEO's password, at least 12 characters. |
+| `RED_CEO_NAME`             | `Red CEO`               | |
 | `RED_TRUST_PROXY`          | off                     | Set to `1` behind exactly one reverse proxy, so rate limits and the activity log use the client address from `X-Forwarded-For`. Leave off otherwise, or clients could spoof it. |
+| `RED_MAX_FILE_MB`    | `10`                     | Largest file someone can upload to a project, in megabytes (up to 100). |
 | `RED_SECURE_COOKIES`       | off                     | Set to `1` to always mark cookies Secure. Behind an HTTPS proxy Red detects this on its own. |
 | `PORT`                     | `3000`                  | Most platforms set this for you. |
 | `HOST`                     | `0.0.0.0` in the image  | `127.0.0.1` when run with `npm start` outside production. |
@@ -126,14 +184,16 @@ accounts and projects.
 | `CRIMGUARD_SQLITE_PATH`    | `database/crimguard.db` | Where the SQLite copy of the risk database lives. |
 | `RED_HONEYTOKEN_SCORE`     | `40`                    | Risk score at which a decoy project is planted for an account. |
 
-The admin variables only matter on the very first start. After that, manage
-people from **People & roles** in the admin console.
+The admin and CEO variables only matter until someone holds that role. After that,
+manage people from **People & roles** in the admin console.
 
 ### Any server with Docker
 
 ```bash
 RED_ADMIN_EMAIL=you@example.com \
 RED_ADMIN_PASSWORD='a-long-admin-password' \
+RED_CEO_EMAIL=ceo@example.com \
+RED_CEO_PASSWORD='a-different-long-password' \
 RED_PASSWORD_PEPPER="$(openssl rand -base64 48)" \
 docker compose up -d --build
 ```
@@ -147,7 +207,8 @@ cookies become `Secure` and `__Host-` prefixed when the proxy sends
 
 1. Point the service at the folder containing the `Dockerfile`. It builds from that.
 2. Add a persistent volume or disk mounted at `/data`.
-3. Set `RED_PASSWORD_PEPPER`, `RED_ADMIN_EMAIL` and `RED_ADMIN_PASSWORD` as secrets.
+3. Set `RED_PASSWORD_PEPPER`, `RED_ADMIN_EMAIL`, `RED_ADMIN_PASSWORD`, `RED_CEO_EMAIL`
+   and `RED_CEO_PASSWORD` as secrets.
 4. Set `RED_TRUST_PROXY=1`.
 5. Set the health check path to `/healthz`.
 
@@ -161,6 +222,11 @@ hashes into `user_credentials`, add profiles, the activity log and throttling, a
 rebuild the sessions table, which signs everyone out once. Existing passwords keep
 working and are upgraded to Argon2id as people sign in. In production, set
 `RED_PASSWORD_PEPPER` first.
+
+Moving to roles with clearance (migration 007) turns every existing User into an
+Employee, keeps admins as admins and marks existing files Internal, without signing
+anyone out. The next start creates the CEO account, so in production set
+`RED_CEO_EMAIL` and `RED_CEO_PASSWORD` before upgrading.
 
 ---
 
@@ -332,17 +398,20 @@ the drift detector reports it as `slow_exfiltration` about seven weeks in.
 
 ```
 src/
-  server.js              startup: config checks, migrations, first admin, graceful shutdown
+  server.js              startup: config checks, migrations, first admin and CEO, graceful shutdown
   app.js                 HTTP server: security headers, CSRF checks, routing, housekeeping
   config.js              environment variables, session lifetimes, rate limits
   validation.js          input cleaning and validation shared by the routes
   routes/                auth.js (sign-up, login, password), profile.js, projects.js,
-                         admin.js (people, roles, activity), pages.js (HTML, static, health)
-  security/              passwords.js (pepper + Argon2id), password-policy.js, sessions.js,
+                         files.js (files, sharing, access), admin.js (people, roles, activity),
+                         crimguard.js (the dashboard's data), pages.js (HTML, static, health)
+  security/              access.js (roles, clearance, who may change access),
+                         passwords.js (pepper + Argon2id), password-policy.js, sessions.js,
                          throttle.js, tokens.js, headers.js
   http/                  router, request parsing, responses, cookies, errors
   db/                    index.js (open, pragmas), migrate.js, and one query module per area:
-                         users.js, sessions.js, projects.js, audit.js
+                         users.js, sessions.js, projects.js, files.js (and who can see
+                         a file), roles.js, people.js (the dashboard), audit.js
   telemetry/             the risk pipeline: coverage.js (how each of the 100 variables is
                          collected), subjects.js, events.js, ingest.js, features.js,
                          snapshots.js, scoring.js, honeytokens.js, patterns.js, geo.js
@@ -350,9 +419,11 @@ database/
   web/migrations/        SQLite schema for the website, applied on start
   crimguard/             PostgreSQL schema for the CrimGuard detection platform
 crimguard/risk/          the scoring formula (see its own README)
-public/                  pages and static/: app.js, telemetry.js (the collector),
-                         risk-panel.js, risk-console.js, styles.css, favicon
-test/                    node --test suites: auth, passwords, profile, projects, admin,
+public/                  pages and static/: app.js, crimguard.js (the dashboard),
+                         telemetry.js (the collector), risk-panel.js, risk-console.js,
+                         styles.css, icons
+test/                    node --test suites: auth, passwords, profile, projects, files, admin,
+                         roles, access, crimguard,
                          security, migrations, telemetry, client-scripts
 scripts/demo/            build.js and demo-api.js, which make the static demo
 scripts/db/              status.js, build-sqlite.js, seed-risk.js
@@ -366,19 +437,34 @@ docker-compose.yml       one-command self-hosting with a data volume
 
 | Method & path                          | Who |
 | -------------------------------------- | --- |
-| `POST /api/signup`                     | anyone, creates a User |
+| `POST /api/signup`                     | anyone, creates an Intern |
 | `POST /api/login` `{portal}`           | anyone |
 | `POST /api/logout`, `GET /api/me`      | signed in |
 | `PATCH /api/me/password` `{currentPassword, newPassword}` | signed in; new session here, signs out other devices |
 | `GET/PATCH /api/me/profile` `{name, jobTitle, organization, bio}` | signed in, own profile |
 | `GET/POST /api/projects`               | signed in, own projects only |
 | `PATCH/DELETE /api/projects/:id`       | signed in, own projects only |
-| `GET /api/admin/users`                 | admin |
-| `POST /api/admin/users` `{role}`       | admin, adds a person who must then choose a password |
-| `PATCH /api/admin/users/:id/role`      | admin, not their own account |
-| `PATCH /api/admin/users/:id/password`  | admin; signs that account out everywhere |
-| `DELETE /api/admin/users/:id`          | admin, not their own account |
-| `GET /api/admin/audit?limit&before`    | admin, newest first |
+| `GET /api/projects/:id/files`          | signed in, own projects only |
+| `POST /api/projects/:id/files`         | own projects; raw bytes with `X-File-Name` (URL-encoded) |
+| `GET /api/projects/:id/files/:fileId/download` | own projects; always sent as a download |
+| `PATCH /api/projects/:id/files/:fileId` `{name}` | own projects; rename |
+| `PUT /api/projects/:id/files/:fileId/content` | own projects; raw bytes, replaces the contents |
+| `DELETE /api/projects/:id/files/:fileId` | own projects |
+| `GET /api/files/shared`                | signed in, files other people shared with you or your role |
+| `GET /api/files/:fileId/download`      | anyone who may see the file; otherwise 404 |
+| `GET /api/files/:fileId/access`        | the owner, admins and the CEO |
+| `PUT /api/files/:fileId/access` `{confidentiality, roles, people}` | admin or CEO, files up to their clearance; replaces the whole list |
+| `GET /api/roles`                       | signed in; admins and the CEO also get member counts |
+| `POST /api/admin/roles` `{label, clearance}` | CEO |
+| `PATCH/DELETE /api/admin/roles/:id`    | CEO, roles the CEO added; delete only when nobody holds it |
+| `GET /api/admin/users`                 | admin or CEO |
+| `POST /api/admin/users` `{role}`       | admin or CEO, roles up to their clearance; the person must then choose a password |
+| `PATCH /api/admin/users/:id/role`      | admin or CEO, not their own account or anyone with more clearance |
+| `PATCH /api/admin/users/:id/password`  | the same; signs that account out everywhere |
+| `DELETE /api/admin/users/:id`          | the same |
+| `GET /api/admin/audit?limit&before`    | admin or CEO, newest first |
+| `GET /api/crimguard/overview`          | admin or CEO, everyone with their counts, presence and score |
+| `GET /api/crimguard/people/:id`        | admin or CEO, one person's record; file names above your clearance left out |
 | `POST /api/telemetry`                  | signed in, own behaviour only |
 | `GET /api/me/risk`                     | signed in, own score and all 100 variables |
 | `GET /api/admin/risk/overview`         | admin, everyone's latest score and open alerts |
@@ -390,5 +476,6 @@ docker-compose.yml       one-command self-hosting with a data volume
 | `POST/DELETE /api/admin/risk/people/:id/leave` | admin, leave periods |
 | `GET /healthz`                         | anyone |
 
-Errors are `{ "error": "message" }`, plus a `code` for `password_change_required` (403)
-and `rate_limited` (429, with `Retry-After`).
+Errors are `{ "error": "message" }`, plus a `code` for `password_change_required` (403),
+`not_privileged` (403, the account no longer has the admin console) and `rate_limited`
+(429, with `Retry-After`).

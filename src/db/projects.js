@@ -2,7 +2,8 @@
 
 // Every project query is scoped by owner_id: another account's project is indistinguishable from a missing one.
 function createProjectStore(db) {
-  const columns = 'id, name, description, status, created_at, updated_at';
+  // file_count lets the project list show how many files each project holds.
+  const columns = 'id, name, description, status, created_at, updated_at, (SELECT COUNT(*) FROM project_files f WHERE f.project_id = projects.id) AS file_count';
   const q = {
     list: db.prepare(`SELECT ${columns} FROM projects WHERE owner_id = ? ORDER BY updated_at DESC, id DESC`),
     get: db.prepare(`SELECT ${columns} FROM projects WHERE id = ? AND owner_id = ?`),

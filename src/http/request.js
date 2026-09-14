@@ -27,6 +27,31 @@ async function readJson(req) {
   return body;
 }
 
+const readableSize = (bytes) => {
+  if (bytes >= 1024 * 1024) return `${Math.round((bytes / (1024 * 1024)) * 10) / 10} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} bytes`;
+};
+
+// Reads a raw file upload of at most maxBytes. An upload that's too large is refused as soon as that's
+// known, and the connection is closed instead of reading the rest of it.
+async function readBinary(req, res, maxBytes) {
+  const tooLarge = () => {
+    res.setHeader('Connection', 'close');
+    return new HttpError(413, `Files can be up to ${readableSize(maxBytes)}.`);
+  };
+  if (Number(req.headers['content-length']) > maxBytes) throw tooLarge();
+
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > maxBytes) throw tooLarge();
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks, size);
+}
+
 // Hosting platforms terminate TLS at a proxy and forward plain HTTP, so also honour
 // X-Forwarded-Proto. A spoofed header can only add the Secure flag, which weakens nothing.
 const isHttps = (req) =>
@@ -44,4 +69,4 @@ function clientIp(req, { trustProxy }) {
 
 const userAgent = (req) => String(req.headers['user-agent'] || '').slice(0, 255);
 
-module.exports = { MAX_BODY_BYTES, readJson, isHttps, clientIp, userAgent };
+module.exports = { MAX_BODY_BYTES, readJson, readBinary, isHttps, clientIp, userAgent };

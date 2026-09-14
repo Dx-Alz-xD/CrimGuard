@@ -5,12 +5,13 @@ function createSessionStore(db) {
     insert: db.prepare(`
       INSERT INTO sessions (token_hash, user_id, created_at, last_seen_at, expires_at, user_agent)
       VALUES (?, ?, ?, ?, ?, ?)`),
-    // Name and role are read from users on every request, so a role change applies to open sessions.
+    // Name, role and clearance are read on every request, so a role change applies to open sessions.
     find: db.prepare(`
       SELECT s.token_hash, s.created_at, s.last_seen_at, s.expires_at,
-             u.id, u.name, u.email, u.role, c.must_change_password
+             u.id, u.name, u.email, u.role, r.clearance, c.must_change_password
       FROM sessions s
       JOIN users u ON u.id = s.user_id
+      JOIN roles r ON r.name = u.role
       JOIN user_credentials c ON c.user_id = u.id
       WHERE s.token_hash = ?`),
     touch: db.prepare('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?'),

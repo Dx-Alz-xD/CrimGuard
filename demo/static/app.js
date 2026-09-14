@@ -35,6 +35,19 @@
   const initials = (name) =>
     name.split(/\s+/).filter(Boolean).slice(0, 2).map((word) => [...word][0].toUpperCase()).join('') || '?';
 
+  function formatBytes(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    const units = ['KB', 'MB', 'GB'];
+    let value = bytes / 1024;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    // Number() drops a trailing ".0", so a 1 MB limit reads "1 MB", not "1.0 MB".
+    return `${value >= 10 ? Math.round(value) : Number(value.toFixed(1))} ${units[unit]}`;
+  }
+
   // SQLite's datetime('now') is UTC with no zone marker.
   const parseSqlDate = (value) => new Date(`${String(value).replace(' ', 'T')}Z`);
 
@@ -68,16 +81,8 @@
     toastTimer = setTimeout(() => { el.hidden = true; }, 3200);
   }
 
-  async function api(method, url, body) {
-    const options = { method, headers: {} };
-    if (method !== 'GET') {
-      options.headers['Content-Type'] = 'application/json';
-      options.body = JSON.stringify(body || {});
-    }
-    const res = await fetch(url, options);
-    const data = res.status === 204 ? {} : await res.json().catch(() => ({}));
-    if (res.ok) return data;
-
+  async function failure(res, url) {
+    const data = await res.json().catch(() => ({}));
     if (res.status === 401 && !AUTH_ENDPOINTS.includes(url)) {
       go(document.body.dataset.page === 'admin' ? '/admin/login' : '/login');
     } else if (res.status === 403 && data.code === 'password_change_required') {
@@ -87,7 +92,40 @@
     }
     const error = new Error(data.error || `Something went wrong (${res.status}). Try again.`);
     error.status = res.status;
-    throw error;
+    return error;
+  }
+
+  async function request(method, url, { body, headers = {} } = {}) {
+    const res = await fetch(url, { method, headers, body });
+    if (!res.ok) throw await failure(res, url);
+    return res.status === 204 ? {} : res.json().catch(() => ({}));
+  }
+
+  const api = (method, url, body) =>
+    request(method, url, method === 'GET' ? {} : { body: JSON.stringify(body || {}), headers: { 'Content-Type': 'application/json' } });
+
+  // Uploads send the file's raw bytes; its name travels URL-encoded in a header.
+  const sendFile = (method, url, file) =>
+    request(method, url, {
+      body: file,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'X-File-Name': encodeURIComponent(file.name),
+        'X-File-Type': file.type || 'application/octet-stream',
+      },
+    });
+
+  // Fetches the file and saves it under its own name. Works the same with the server and the static demo.
+  async function downloadFile(projectId, file) {
+    const url = `/api/projects/${projectId}/files/${file.id}/download`;
+    const res = await fetch(url);
+    if (!res.ok) throw await failure(res, url);
+    const objectUrl = URL.createObjectURL(await res.blob());
+    const link = h('a', { href: objectUrl, download: file.name, hidden: true });
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
   }
 
   // ---- form building blocks -----------------------------------------------------
@@ -364,6 +402,7 @@
         if (editing) {
           const { project } = await api('PATCH', `/api/projects/${editing.id}`, data);
           projects = [project, ...projects.filter((p) => p.id !== project.id)];
+          drawer.sync(projects);
           toast('Project saved');
         } else {
           const { project } = await api('POST', '/api/projects', data);
@@ -388,6 +427,19 @@
       });
     };
     for (const button of document.querySelectorAll('[data-new-project]')) button.addEventListener('click', openNew);
+
+    const drawer = projectDrawer({
+      onEdit: (project) => openEdit(projects.find((p) => p.id === project.id) || project),
+      // File changes move a project to the top and change its file count, so reload the list.
+      onFilesChanged: () =>
+        api('GET', '/api/projects')
+          .then((data) => {
+            projects = data.projects;
+            render();
+            drawer.sync(projects);
+          })
+          .catch((err) => toast(err.message, 'error')),
+    });
 
     const filterBar = h('div', { class: 'filter', role: 'group', 'aria-label': 'Filter by status' },
       ['all', 'active', 'planning', 'done'].map((key) =>
@@ -421,9 +473,12 @@
       return h('li', { class: 'project-row' },
         h('span', { class: `status status-${project.status}` }, STATUS_LABELS[project.status]),
         h('div', { class: 'project-main' },
-          h('p', { class: 'project-name' }, project.name),
+          h('p', { class: 'project-name' },
+            h('button', { class: 'project-open', type: 'button', 'aria-haspopup': 'dialog', onclick: () => drawer.open(project) }, project.name)),
           project.description && h('p', { class: 'project-desc' }, project.description)),
-        h('span', { class: 'project-updated' }, `Updated ${formatDate(project.updated_at)}`),
+        h('span', { class: 'project-updated' },
+          `Updated ${formatDate(project.updated_at)}`,
+          project.file_count > 0 && h('span', { class: 'project-files' }, `, ${plural(project.file_count, 'file')}`)),
         h('div', { class: 'row-actions' },
           h('button', { class: 'btn btn-quiet btn-sm', type: 'button', 'aria-label': `Edit ${project.name}`, onclick: () => openEdit(project) }, 'Edit'),
           h('button', { class: 'btn btn-quiet btn-danger btn-sm', type: 'button', 'aria-label': `Delete ${project.name}`, onclick: () => remove(project) }, 'Delete')));
@@ -435,6 +490,7 @@
         await api('DELETE', `/api/projects/${project.id}`);
         projects = projects.filter((p) => p.id !== project.id);
         render();
+        drawer.sync(projects);
         toast('Project deleted');
       } catch (err) {
         toast(err.message, 'error');
@@ -452,6 +508,301 @@
   }
 
   // ---- people & roles (admins only) ------------------------------------------------
+
+  // ---- project panel: details and files ---------------------------------------------
+
+  function closeIcon() {
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    for (const [key, value] of Object.entries({ width: 16, height: 16, viewBox: '0 0 16 16', 'aria-hidden': 'true' })) svg.setAttribute(key, value);
+    const path = document.createElementNS(ns, 'path');
+    for (const [key, value] of Object.entries({ d: 'M4 4l8 8M12 4l-8 8', fill: 'none', stroke: 'currentColor', 'stroke-width': 1.8, 'stroke-linecap': 'round' })) path.setAttribute(key, value);
+    svg.append(path);
+    return svg;
+  }
+
+  function extensionOf(name) {
+    const dot = name.lastIndexOf('.');
+    return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1, dot + 5).toLowerCase() : 'file';
+  }
+
+  function projectDrawer({ onEdit, onFilesChanged }) {
+    let project = null;
+    let files = [];
+    let loading = false;
+    let maxFileBytes = 10 * 1024 * 1024;
+    let renamingId = null;
+    let replaceTarget = null;
+    let dragDepth = 0;
+    const busy = new Set();
+    const errors = new Map();
+    const uploads = [];
+
+    const titleEl = h('h2', { class: 'drawer-title', id: uid('drawer-title') });
+    const meta = h('div', { class: 'drawer-meta' });
+    const description = h('p', { class: 'drawer-desc' });
+    const summary = h('span', { class: 'files-summary' });
+    const limitHint = h('span', { class: 'field-hint' });
+    const list = h('div');
+    const picker = h('input', { type: 'file', multiple: true, hidden: true });
+    const replacePicker = h('input', { type: 'file', hidden: true });
+    const dropzone = h('div', { class: 'dropzone' },
+      h('span', {}, 'Drag files here, or ', h('button', { class: 'link-button', type: 'button', onclick: () => picker.click() }, 'choose files')),
+      limitHint);
+
+    const dialog = h('dialog', { class: 'drawer', 'aria-labelledby': titleEl.id },
+      h('div', { class: 'drawer-head' },
+        h('div', {}, titleEl, meta),
+        h('div', { class: 'drawer-head-actions' },
+          h('button', { class: 'btn btn-secondary btn-sm', type: 'button', onclick: () => project && onEdit(project) }, 'Edit details'),
+          h('button', { class: 'icon-button', type: 'button', 'aria-label': 'Close', onclick: () => dialog.close() }, closeIcon()))),
+      h('div', { class: 'drawer-body' },
+        description,
+        h('section', { class: 'files', 'aria-labelledby': uid('files-title') },
+          h('div', { class: 'files-head' }, h('h3', {}, 'Files'), summary),
+          dropzone,
+          list,
+          picker,
+          replacePicker)));
+    dialog.querySelector('.files-head h3').id = dialog.querySelector('.files').getAttribute('aria-labelledby');
+    document.body.append(dialog);
+
+    // The whole panel accepts dropped files, so a near miss doesn't open the file in the browser.
+    dialog.addEventListener('dragenter', (event) => {
+      if (!event.dataTransfer?.types.includes('Files')) return;
+      event.preventDefault();
+      dragDepth += 1;
+      dropzone.classList.add('is-dragging');
+    });
+    dialog.addEventListener('dragover', (event) => event.preventDefault());
+    dialog.addEventListener('dragleave', () => {
+      dragDepth = Math.max(0, dragDepth - 1);
+      if (!dragDepth) dropzone.classList.remove('is-dragging');
+    });
+    dialog.addEventListener('drop', (event) => {
+      event.preventDefault();
+      dragDepth = 0;
+      dropzone.classList.remove('is-dragging');
+      if (event.dataTransfer?.files.length) upload([...event.dataTransfer.files]);
+    });
+
+    picker.addEventListener('change', () => {
+      const chosen = [...picker.files];
+      picker.value = '';
+      upload(chosen);
+    });
+    replacePicker.addEventListener('change', () => {
+      const chosen = replacePicker.files[0];
+      const target = replaceTarget;
+      replacePicker.value = '';
+      replaceTarget = null;
+      if (chosen && target) replace(target, chosen);
+    });
+
+    dialog.addEventListener('close', () => {
+      project = null;
+      files = [];
+      renamingId = null;
+      errors.clear();
+    });
+
+    const tooLarge = (file) => `${file.name} is ${formatBytes(file.size)}. Files can be up to ${formatBytes(maxFileBytes)}.`;
+    const isShowing = (projectId) => project && project.id === projectId;
+
+    async function upload(chosen) {
+      if (!project) return;
+      const projectId = project.id;
+      for (const file of chosen) {
+        if (file.size > maxFileBytes) {
+          toast(tooLarge(file), 'error');
+          continue;
+        }
+        const pending = { projectId, name: file.name, size: file.size };
+        uploads.push(pending);
+        render();
+        try {
+          const { file: saved } = await sendFile('POST', `/api/projects/${projectId}/files`, file);
+          if (isShowing(projectId)) files = [saved, ...files];
+          toast(`Uploaded ${saved.name}`);
+          onFilesChanged();
+        } catch (err) {
+          toast(err.message, 'error');
+        } finally {
+          uploads.splice(uploads.indexOf(pending), 1);
+          render();
+        }
+      }
+    }
+
+    async function withBusy(file, work) {
+      const projectId = project.id;
+      busy.add(file.id);
+      errors.delete(file.id);
+      render();
+      try {
+        await work(projectId);
+        onFilesChanged();
+      } catch (err) {
+        errors.set(file.id, err.message);
+      } finally {
+        busy.delete(file.id);
+        render();
+      }
+    }
+
+    function replace(file, chosen) {
+      if (chosen.size > maxFileBytes) {
+        toast(tooLarge(chosen), 'error');
+        return;
+      }
+      withBusy(file, async (projectId) => {
+        const { file: saved } = await sendFile('PUT', `/api/projects/${projectId}/files/${file.id}/content`, chosen);
+        if (isShowing(projectId)) files = [saved, ...files.filter((f) => f.id !== saved.id)];
+        toast(`Uploaded a new version of ${saved.name}`);
+      });
+    }
+
+    function rename(file, name) {
+      withBusy(file, async (projectId) => {
+        const { file: saved } = await api('PATCH', `/api/projects/${projectId}/files/${file.id}`, { name });
+        if (isShowing(projectId)) files = files.map((f) => (f.id === saved.id ? saved : f));
+        renamingId = null;
+        toast(`Renamed to ${saved.name}`);
+      });
+    }
+
+    function remove(file) {
+      if (!confirm(`Delete ${file.name}? This can't be undone.`)) return;
+      withBusy(file, async (projectId) => {
+        await api('DELETE', `/api/projects/${projectId}/files/${file.id}`);
+        if (isShowing(projectId)) files = files.filter((f) => f.id !== file.id);
+        toast(`Deleted ${file.name}`);
+      });
+    }
+
+    function stopRenaming(file) {
+      renamingId = null;
+      errors.delete(file.id);
+      render();
+    }
+
+    function renderProject() {
+      titleEl.textContent = project.name;
+      meta.replaceChildren(
+        h('span', { class: `status status-${project.status}` }, STATUS_LABELS[project.status]),
+        h('span', {}, `Updated ${formatDate(project.updated_at)}`));
+      description.textContent = project.description || 'No description yet.';
+      description.classList.toggle('is-empty', !project.description);
+    }
+
+    function fileRow(file) {
+      const isBusy = busy.has(file.id);
+      const error = errors.get(file.id);
+      const badge = h('span', { class: 'file-badge', 'aria-hidden': 'true' }, extensionOf(file.name));
+
+      if (renamingId === file.id) {
+        const input = h('input', { value: file.name, maxlength: 255, required: true, 'aria-label': `New name for ${file.name}` });
+        const form = h('form', { class: 'file-rename' },
+          input,
+          h('button', { class: 'btn btn-primary btn-sm', type: 'submit', disabled: isBusy }, 'Save'),
+          h('button', { class: 'btn btn-quiet btn-sm', type: 'button', onclick: () => stopRenaming(file) }, 'Cancel'));
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+          if (input.value.trim() === file.name) stopRenaming(file);
+          else rename(file, input.value);
+        });
+        input.addEventListener('keydown', (event) => {
+          if (event.key !== 'Escape') return;
+          event.preventDefault(); // cancel the rename, not the whole panel
+          stopRenaming(file);
+        });
+        queueMicrotask(() => {
+          if (!input.isConnected || document.activeElement === input) return;
+          input.focus();
+          const dot = file.name.lastIndexOf('.');
+          input.setSelectionRange(0, dot > 0 ? dot : file.name.length); // select the name, not the extension
+        });
+        return h('li', { class: 'file-row is-renaming' }, badge, h('div', { class: 'file-main' }, form),
+          error && h('p', { class: 'file-error', role: 'alert' }, error));
+      }
+
+      const action = (label, ariaLabel, onclick, extra = '') =>
+        h('button', { class: `btn btn-quiet btn-sm${extra}`, type: 'button', disabled: isBusy, 'aria-label': ariaLabel, onclick }, label);
+      return h('li', { class: isBusy ? 'file-row is-busy' : 'file-row', 'aria-busy': isBusy ? 'true' : null },
+        badge,
+        h('div', { class: 'file-main' },
+          h('p', { class: 'file-name', title: file.name }, file.name),
+          h('p', { class: 'file-meta' }, `${formatBytes(file.size)}, updated ${formatDate(file.updated_at)}`)),
+        h('div', { class: 'file-actions' },
+          action('Download', `Download ${file.name}`, () => downloadFile(project.id, file).catch((err) => toast(err.message, 'error'))),
+          action('Rename', `Rename ${file.name}`, () => {
+            renamingId = file.id;
+            errors.delete(file.id);
+            render();
+          }),
+          action('Replace', `Replace ${file.name} with a new version`, () => {
+            replaceTarget = file;
+            replacePicker.click();
+          }),
+          action('Delete', `Delete ${file.name}`, () => remove(file), ' btn-danger')),
+        error && h('p', { class: 'file-error', role: 'alert' }, error));
+    }
+
+    function render() {
+      if (!project) return;
+      const total = files.reduce((sum, file) => sum + file.size, 0);
+      summary.textContent = loading ? 'Loading files…' : files.length ? `${plural(files.length, 'file')}, ${formatBytes(total)}` : 'No files yet';
+      limitHint.textContent = `Up to ${formatBytes(maxFileBytes)} each`;
+      const rows = [
+        // Only uploads for the project on screen; switching projects mid-upload must not show them elsewhere.
+        ...uploads.filter((pending) => pending.projectId === project.id).map((pending) =>
+          h('li', { class: 'file-row is-busy', 'aria-busy': 'true' },
+            h('span', { class: 'file-badge', 'aria-hidden': 'true' }, extensionOf(pending.name)),
+            h('div', { class: 'file-main' },
+              h('p', { class: 'file-name', title: pending.name }, pending.name),
+              h('p', { class: 'file-meta' }, `Uploading ${formatBytes(pending.size)}…`)))),
+        ...files.map(fileRow),
+      ];
+      list.replaceChildren(...(rows.length ? [h('ul', { class: 'file-list' }, rows)] : []));
+    }
+
+    return {
+      async open(next) {
+        project = next;
+        files = [];
+        renamingId = null;
+        errors.clear();
+        loading = true;
+        renderProject();
+        render();
+        if (!dialog.open) dialog.showModal();
+        try {
+          const data = await api('GET', `/api/projects/${next.id}/files`);
+          if (!isShowing(next.id)) return;
+          files = data.files;
+          if (data.maxFileBytes) maxFileBytes = data.maxFileBytes;
+        } catch (err) {
+          toast(err.message, 'error');
+        } finally {
+          if (isShowing(next.id)) {
+            loading = false;
+            render();
+          }
+        }
+      },
+      // Keeps the open panel in step with the project list: new details, or closed if the project is gone.
+      sync(projects) {
+        if (!project) return;
+        const fresh = projects.find((p) => p.id === project.id);
+        if (!fresh) {
+          dialog.close();
+          return;
+        }
+        project = fresh;
+        renderProject();
+      },
+    };
+  }
 
   function mountPeople(me, account) {
     const rows = $('#user-rows');
