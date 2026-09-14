@@ -17,6 +17,7 @@ const { registerProjectRoutes } = require('./routes/projects');
 const { registerFileRoutes } = require('./routes/files');
 const { registerAdminRoutes } = require('./routes/admin');
 const { registerTelemetryRoutes } = require('./routes/telemetry');
+const { registerCrimGuardRoutes } = require('./routes/crimguard');
 const { createPageHandler } = require('./routes/pages');
 const { createTelemetry } = require('./telemetry');
 
@@ -69,7 +70,7 @@ function createApp({
   // Behavioural telemetry into the CrimGuard risk database. Without that database this is a
   // no-op object, so every route below behaves the same whether or not it is connected.
   const telemetry = createTelemetry(crimguard);
-  const deps = { stores, sessions, passwords, throttle, limits: rateLimits, telemetry, crimguard, maxFileBytes };
+  const deps = { stores, sessions, passwords, throttle, limits: rateLimits, telemetry, crimguard, maxFileBytes, sessionPolicy, now };
 
   const router = createRouter();
   registerAuthRoutes(router, deps);
@@ -78,6 +79,7 @@ function createApp({
   registerFileRoutes(router, deps);
   registerAdminRoutes(router, deps);
   registerTelemetryRoutes(router, deps);
+  registerCrimGuardRoutes(router, deps);
   const handlePage = createPageHandler({ db, sessions, telemetry });
 
   async function route(req, res) {
@@ -123,7 +125,7 @@ function createApp({
   // session. Both are recorded here rather than in each route.
   function recordRefusal(req, status, client) {
     try {
-      if (status === 403 && req.url.startsWith('/api/admin/')) {
+      if (status === 403 && (req.url.startsWith('/api/admin/') || req.url.startsWith('/api/crimguard/'))) {
         const user = sessions.current(req);
         if (user) telemetry.onViolation({ user, tokenHash: req.sessionTokenHash, client, path: new URL(req.url, 'http://red.local').pathname });
       } else if (status === 401) {

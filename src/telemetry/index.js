@@ -11,6 +11,7 @@
 // raw events into the 100 variables and scores them.
 
 const crypto = require('node:crypto');
+const { isPrivileged } = require('../security/access');
 const { createSubjects } = require('./subjects');
 const { createEvents } = require('./events');
 const { parseBatch } = require('./ingest');
@@ -32,8 +33,9 @@ const sessionRef = (tokenHash) =>
 
 const today = () => new Date().toISOString().slice(0, 10);
 
-// Red's two roles, as the peer groups the engine compares people within.
-const ROLE_NAMES = { admin: 'Red admin', user: 'Red user' };
+// Red's roles, as the peer groups the engine compares people within. A role the CEO adds is named
+// after itself. 'user' is the role everyone but admins had before roles had clearance.
+const ROLE_NAMES = { ceo: 'Red CEO', admin: 'Red admin', employee: 'Red employee', intern: 'Red intern', user: 'Red user' };
 
 const median = (values) => {
   if (!values.length) return null;
@@ -545,10 +547,10 @@ function createTelemetry(db, {
   // explain access that follows a promotion.
   async function recordRoleAssignment(crimUserId, role, from) {
     const org = await subjects.organization();
-    const name = ROLE_NAMES[role] || role;
+    const name = ROLE_NAMES[role] || `Red ${role}`;
     let { rows } = await db.query('SELECT id FROM roles WHERE org_id = ? AND name = ?', [org, name]);
     if (!rows.length) {
-      await db.query('INSERT INTO roles (org_id, name, is_privileged) VALUES (?, ?, ?)', [org, name, role === 'admin']);
+      await db.query('INSERT INTO roles (org_id, name, is_privileged) VALUES (?, ?, ?)', [org, name, isPrivileged(role)]);
       ({ rows } = await db.query('SELECT id FROM roles WHERE org_id = ? AND name = ?', [org, name]));
     }
     const roleId = rows[0].id;

@@ -8,10 +8,10 @@ class DuplicateEmailError extends Error {}
 function createUserStore(db, { transaction }) {
   const q = {
     loginByEmail: db.prepare(`
-      SELECT u.id, u.name, u.email, u.role, c.password_hash, c.must_change_password
-      FROM users u JOIN user_credentials c ON c.user_id = u.id
+      SELECT u.id, u.name, u.email, u.role, r.clearance, c.password_hash, c.must_change_password
+      FROM users u JOIN user_credentials c ON c.user_id = u.id JOIN roles r ON r.name = u.role
       WHERE u.email = ?`),
-    byId: db.prepare('SELECT id, name, email, role FROM users WHERE id = ?'),
+    byId: db.prepare('SELECT u.id, u.name, u.email, u.role, r.clearance FROM users u JOIN roles r ON r.name = u.role WHERE u.id = ?'),
     passwordHash: db.prepare('SELECT password_hash FROM user_credentials WHERE user_id = ?'),
 
     insertUser: db.prepare("INSERT INTO users (name, email, role, updated_at) VALUES (?, ?, ?, datetime('now'))"),
@@ -29,9 +29,10 @@ function createUserStore(db, { transaction }) {
     remove: db.prepare('DELETE FROM users WHERE id = ?'),
 
     list: db.prepare(`
-      SELECT u.id, u.name, u.email, u.role, u.created_at, u.last_login_at,
+      SELECT u.id, u.name, u.email, u.role, r.label AS role_label, r.clearance, u.created_at, u.last_login_at,
              (SELECT COUNT(*) FROM projects p WHERE p.owner_id = u.id) AS project_count
       FROM users u
+      JOIN roles r ON r.name = u.role
       ORDER BY u.created_at, u.id`),
 
     profile: db.prepare(`
@@ -55,7 +56,7 @@ function createUserStore(db, { transaction }) {
         const id = Number(q.insertUser.run(name, email, role).lastInsertRowid);
         q.insertCredentials.run(id, passwordHash, mustChangePassword ? 1 : 0);
         q.insertProfile.run(id);
-        return { id, name, email, role };
+        return q.byId.get(id);
       });
     } catch (err) {
       if (/UNIQUE constraint failed: users\.email/.test(err.message)) throw new DuplicateEmailError();

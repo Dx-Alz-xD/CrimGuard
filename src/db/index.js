@@ -9,8 +9,9 @@ const { createSessionStore } = require('./sessions');
 const { createProjectStore } = require('./projects');
 const { createAuditLog } = require('./audit');
 const { createFileStore } = require('./files');
+const { createRoleStore } = require('./roles');
+const { createPeopleStore } = require('./people');
 
-const ROLES = ['user', 'admin'];
 const STATUSES = ['planning', 'active', 'done'];
 
 function openDb(file) {
@@ -55,18 +56,25 @@ function createStores(db) {
     sessions: createSessionStore(db),
     projects: createProjectStore(db),
     files: createFileStore(db, { transaction: (fn) => transaction(db, fn) }),
+    roles: createRoleStore(db),
+    people: createPeopleStore(db),
     audit: createAuditLog(db),
   };
 }
 
-const hasAdmin = (db) => Boolean(db.prepare("SELECT 1 FROM users WHERE role = 'admin' LIMIT 1").get());
+const hasRole = (db, role) => Boolean(db.prepare('SELECT 1 FROM users WHERE role = ? LIMIT 1').get(role));
+const hasAdmin = (db) => hasRole(db, 'admin');
 
-// Creates the first admin when none exists. Returns true if an account was created.
-async function ensureAdmin(db, passwords, { name, email, password, mustChangePassword = false }) {
-  if (hasAdmin(db)) return false;
+// Creates the first account with a role, such as the first admin or the CEO, when nobody holds that
+// role yet. Returns true if an account was created.
+async function ensureAccount(db, passwords, role, { name, email, password, mustChangePassword = false }) {
+  if (hasRole(db, role)) return false;
   const passwordHash = await passwords.hash(password);
-  createStores(db).users.create({ name, email, role: 'admin', passwordHash, mustChangePassword });
+  createStores(db).users.create({ name, email, role, passwordHash, mustChangePassword });
   return true;
 }
 
-module.exports = { ROLES, STATUSES, openDb, transaction, createStores, hasAdmin, ensureAdmin };
+const ensureAdmin = (db, passwords, account) => ensureAccount(db, passwords, 'admin', account);
+const ensureCeo = (db, passwords, account) => ensureAccount(db, passwords, 'ceo', account);
+
+module.exports = { STATUSES, openDb, transaction, createStores, hasRole, hasAdmin, ensureAccount, ensureAdmin, ensureCeo };

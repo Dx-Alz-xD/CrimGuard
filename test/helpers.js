@@ -1,12 +1,13 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const { openDb, ensureAdmin } = require('../src/db');
+const { openDb, ensureAdmin, ensureCeo } = require('../src/db');
 const { createApp } = require('../src/app');
 const { createPasswordHasher } = require('../src/security/passwords');
 
 const PEPPER = 'test-pepper-0123456789abcdefghijklmnopqrstuvwxyz';
 const ADMIN = { name: 'Ada Admin', email: 'ada@red.test', password: 'admin-pass-1234' };
+const CEO = { name: 'Cleo Chief', email: 'cleo@red.test', password: 'chief-pass-1234' };
 const PASSWORD = 'user-pass-1234';
 
 // High enough that ordinary tests never hit them; the rate-limit tests pass their own.
@@ -19,10 +20,11 @@ const RELAXED_LIMITS = {
 
 const passwords = createPasswordHasher({ pepper: PEPPER });
 
-// Starts an app on a random port with an in-memory database and one admin.
+// Starts an app on a random port with an in-memory database, one admin and the CEO.
 async function startApp(options = {}) {
   const db = options.db || openDb(':memory:');
   await ensureAdmin(db, passwords, ADMIN);
+  await ensureCeo(db, passwords, CEO);
   const server = createApp({ db, pepper: PEPPER, rateLimits: RELAXED_LIMITS, ...options });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -68,11 +70,33 @@ async function startApp(options = {}) {
     return { b, email, user: res.body.user };
   }
 
-  async function signInAdmin() {
+  async function signInAs({ email, password }) {
     const b = browser();
-    const res = await b('POST', '/api/login', { email: ADMIN.email, password: ADMIN.password, portal: 'admin' });
+    const res = await b('POST', '/api/login', { email, password, portal: 'admin' });
     assert.equal(res.status, 200, JSON.stringify(res.body));
     return { b, user: res.body.user };
+  }
+  const signInAdmin = () => signInAs(ADMIN);
+  const signInCeo = () => signInAs(CEO);
+
+  // Signs someone up (as an intern) and has the CEO give them another role. The CEO's session is
+  // reused across calls, and replaced if a test has ended it.
+  let chief = null;
+  async function signUpAs(role, name) {
+    const person = await signUp(name);
+    if (role === 'intern') return person;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      chief = chief || (await signInCeo());
+      const res = await chief.b('PATCH', `/api/admin/users/${person.user.id}/role`, { role });
+      if (res.status === 401) {
+        chief = null;
+        continue;
+      }
+      assert.equal(res.status, 200, JSON.stringify(res.body));
+      person.user = res.body.user;
+      return person;
+    }
+    throw new Error('Could not sign in as the CEO.');
   }
 
   function close() {
@@ -80,7 +104,7 @@ async function startApp(options = {}) {
     server.close();
   }
 
-  return { db, server, base, browser, freshEmail, signUp, signInAdmin, close };
+  return { db, server, base, browser, freshEmail, signUp, signUpAs, signInAdmin, signInCeo, close };
 }
 
-module.exports = { PEPPER, ADMIN, PASSWORD, RELAXED_LIMITS, passwords, startApp };
+module.exports = { PEPPER, ADMIN, CEO, PASSWORD, RELAXED_LIMITS, passwords, startApp };

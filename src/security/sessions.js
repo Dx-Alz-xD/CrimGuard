@@ -4,6 +4,7 @@ const { HttpError } = require('../http/errors');
 const { parseCookies, serializeCookie } = require('../http/cookies');
 const { isHttps, userAgent } = require('../http/request');
 const { newToken, hashToken } = require('./tokens');
+const { isPrivileged, isCeo } = require('./access');
 
 // Over HTTPS the cookie uses the __Host- prefix, which browsers only accept with Secure, Path=/ and no
 // Domain, so a sibling subdomain can't plant or overwrite it. Plain HTTP (local development) can't use it.
@@ -16,6 +17,8 @@ const TOUCH_INTERVAL_MS = 60 * 1000;
 function createSessionManager({ sessions, policy, secureCookies, now = Date.now }) {
   const secure = (req) => secureCookies || isHttps(req);
   const cookieName = (req) => (secure(req) ? SECURE_COOKIE : PLAIN_COOKIE);
+  // Admins and the CEO get the shorter admin limits; every other role gets the user limits.
+  const limitsFor = (role) => (isPrivileged(role) ? policy.admin : policy.user);
 
   // A request that arrived over HTTPS only trusts the __Host- cookie.
   const tokenFrom = (req) => parseCookies(req.headers.cookie)[cookieName(req)] || null;
@@ -37,7 +40,7 @@ function createSessionManager({ sessions, policy, secureCookies, now = Date.now 
     if (!row) return null;
 
     const t = now();
-    const limits = policy[row.role] || policy.admin;
+    const limits = limitsFor(row.role);
     if (t >= row.expires_at || t - row.created_at >= limits.absoluteMs || t - row.last_seen_at >= limits.idleMs) {
       sessions.remove(tokenHash);
       return null;
@@ -49,6 +52,7 @@ function createSessionManager({ sessions, policy, secureCookies, now = Date.now 
       name: row.name,
       email: row.email,
       role: row.role,
+      clearance: row.clearance,
       mustChangePassword: row.must_change_password === 1,
     };
     req.sessionTokenHash = tokenHash;
@@ -59,7 +63,7 @@ function createSessionManager({ sessions, policy, secureCookies, now = Date.now 
   function start(req, res, user) {
     end(req);
     const t = now();
-    const limits = policy[user.role] || policy.admin;
+    const limits = limitsFor(user.role);
     const token = newToken();
     const tokenHash = hashToken(token);
     sessions.purgeExpired(t);
@@ -106,13 +110,21 @@ function createSessionManager({ sessions, policy, secureCookies, now = Date.now 
     return user;
   }
 
+  // Admins and the CEO. The code tells the browser this account no longer has the console, rather than
+  // that one action was out of reach, so the page can send them back to their dashboard.
   function requireAdmin(req) {
     const user = requireUser(req);
-    if (user.role !== 'admin') throw new HttpError(403, 'Admin access required.');
+    if (!isPrivileged(user.role)) throw new HttpError(403, 'Admin access required.', { code: 'not_privileged' });
     return user;
   }
 
-  return { current, start, end, endOthers, clearCookie, requireUser, requireAdmin, staleTokenHash };
+  function requireCeo(req) {
+    const user = requireAdmin(req);
+    if (!isCeo(user.role)) throw new HttpError(403, 'Only the CEO can do this.');
+    return user;
+  }
+
+  return { current, start, end, endOthers, clearCookie, requireUser, requireAdmin, requireCeo, staleTokenHash };
 }
 
 module.exports = { SECURE_COOKIE, PLAIN_COOKIE, createSessionManager };

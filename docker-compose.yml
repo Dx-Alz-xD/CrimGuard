@@ -8,6 +8,10 @@ services:
       RED_ADMIN_EMAIL: ${RED_ADMIN_EMAIL:-admin@red.local}
       # Only used to create the first admin, but required so it never gets a guessable password.
       RED_ADMIN_PASSWORD: ${RED_ADMIN_PASSWORD:?Set RED_ADMIN_PASSWORD in your environment or a .env file}
+      RED_CEO_NAME: ${RED_CEO_NAME:-Red CEO}
+      RED_CEO_EMAIL: ${RED_CEO_EMAIL:-ceo@red.local}
+      # Only used to create the CEO account on first start, required for the same reason.
+      RED_CEO_PASSWORD: ${RED_CEO_PASSWORD:?Set RED_CEO_PASSWORD in your environment or a .env file}
       # Secret mixed into every password hash. Generate once with `openssl rand -base64 48`, keep it
       # out of the database backups, and never change it: a new pepper invalidates every password.
       RED_PASSWORD_PEPPER: ${RED_PASSWORD_PEPPER:?Set RED_PASSWORD_PEPPER in your environment or a .env file}
