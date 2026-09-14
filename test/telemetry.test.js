@@ -16,6 +16,8 @@ const { startApp, PASSWORD } = require('./helpers');
 const today = () => new Date().toISOString().slice(0, 10);
 const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 const memoryRisk = () => connectCrimGuard({ mode: 'sqlite', sqlitePath: ':memory:' });
+const crimIdOf = async (app, user) =>
+  Number((await app.crimguard.query('SELECT id FROM users WHERE okta_user_id = ?', [`red:${user.id}`])).rows[0].id);
 
 // An app with the risk database attached. The scheduled run is turned off so each test
 // decides when aggregation happens.
@@ -454,16 +456,21 @@ test('changing a decoy revokes every session and is recorded as a honeytoken tri
 
   assert.equal((await b('GET', '/api/me')).status, 401, 'this session is gone');
   assert.equal((await phone('GET', '/api/me')).status, 401, 'and so is every other one');
+  // The identity throttle freezes the account: the password alone no longer gets back in.
+  const refused = await app.browser()('POST', '/api/login', { email, password: PASSWORD, portal: 'user' });
+  assert.deepEqual([refused.status, refused.body.code], [403, 'account_frozen']);
+  const admin = await app.signInAdmin();
+  const crimId = await crimIdOf(app, user);
+  assert.equal((await admin.b('POST', `/api/admin/identity/people/${crimId}/restore`, { note: 'reviewed' })).status, 200);
   assert.equal((await app.browser()('POST', '/api/login', { email, password: PASSWORD, portal: 'user' })).status, 200,
-    'the account still exists: the sessions were revoked, not the person');
+    'the account still exists: once an admin restores access, the person can sign in again');
 
   const { rows } = await app.crimguard.query('SELECT interaction, user_id FROM honeytoken_triggers');
   assert.equal(rows.length, 1);
   assert.equal(rows[0].interaction, 'modified');
 
-  const { rows: actions } = await app.crimguard.query("SELECT action, status FROM identity_actions WHERE action = 'session_revoke'");
-  assert.equal(actions.length, 1);
-  assert.equal(actions[0].status, 'completed');
+  const { rows: actions } = await app.crimguard.query("SELECT action, status FROM identity_actions WHERE action IN ('session_revoke', 'session_freeze', 'restore_access') ORDER BY id");
+  assert.deepEqual(actions.map((a) => `${a.action}:${a.status}`), ['session_revoke:completed', 'session_freeze:completed', 'restore_access:completed']);
 
   // The decoy is spent, so it cannot collect the same trip twice.
   const { rows: tokens } = await app.crimguard.query('SELECT is_active FROM honeytokens');
@@ -511,8 +518,10 @@ test('a fresh decoy is planted after one is tripped, and it is a different one',
   await app.telemetry.flush();
   assert.deepEqual(await app.telemetry.honeytokens.listFor(user.id), [], 'the tripped decoy is retired');
 
-  // Still above the threshold after signing back in, so a new decoy goes down. The retired
-  // one must not block it.
+  // Still above the threshold once an admin has restored access, so a new decoy goes down. The
+  // retired one must not block it.
+  const admin = await app.signInAdmin();
+  assert.equal((await admin.b('POST', `/api/admin/identity/people/${await crimIdOf(app, user)}/restore`, {})).status, 200);
   const again = app.browser();
   assert.equal((await again('POST', '/api/login', { email, password: PASSWORD, portal: 'user' })).status, 200);
   const planted = await app.telemetry.honeytokens.plantIfNeeded(user.id, 95);

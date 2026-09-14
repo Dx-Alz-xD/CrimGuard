@@ -60,7 +60,7 @@ const duplicateName = (name) =>
   new HttpError(409, `A file named "${name}" is already in this project. Rename one of them, or replace the existing file.`);
 const fileNotFound = () => new HttpError(404, 'File not found.');
 
-function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes }) {
+function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes, protection }) {
   const { projects, files } = stores;
 
   function ownProject(user, projectId) {
@@ -84,6 +84,8 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes 
     stores.audit.record('security.honeytoken_tripped', {
       actor: user, target: user, ...client, details: { interaction: 'modified', decoy: report.decoy, score: report.score },
     });
+    // The identity throttle turns it into a freeze: signing back in waits for an admin.
+    await protection?.onHoneytokenTrip(report);
     throw new HttpError(401, 'Your session has ended. Please sign in again.');
   }
 
@@ -117,6 +119,7 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes 
     // Checked before reading the body, so a clash doesn't cost a full upload.
     if (files.nameTaken(project.id, name)) throw duplicateName(name);
     const content = await readBinary(req, res, maxFileBytes);
+    await protection?.inspectUpload({ user, content, client });
     let file;
     try {
       file = files.create(project.id, { name, type: fileType(req.headers['x-file-type']), content });
@@ -166,6 +169,7 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes 
     const project = ownProject(user, params.id);
     if (!files.get(params.fileId, project.id)) throw fileNotFound();
     const content = await readBinary(req, res, maxFileBytes);
+    await protection?.inspectUpload({ user, content, client });
     const file = files.replace(params.fileId, project.id, { type: fileType(req.headers['x-file-type']), content });
     if (!file) throw fileNotFound();
     reportAccess({ req, client, user, project }, 'write', { bytes: file.size });

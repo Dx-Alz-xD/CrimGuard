@@ -2,12 +2,16 @@
 
 // Connects to the CrimGuard risk database (the 100 risk variables, context ledger,
 // scores and alerts). Uses PostgreSQL when CRIMGUARD_DATABASE_URL points at a server
-// with the schema loaded, and otherwise falls back to the SQLite copy committed at
-// database/crimguard.db, so anyone who clones the repo can use the data.
+// with the schema loaded, and otherwise falls back to SQLite.
+//
+// The SQLite file a running server writes to is data/crimguard.db, which git ignores. The first
+// time it's needed it is copied from database/crimguard.db, the seed committed to the repo, so
+// anyone who clones the repo starts with the shared data - and a server writing its own activity
+// never changes a tracked file, which is what made pushes conflict.
 //
 //   CRIMGUARD_DB            auto (default) | postgres (never fall back) | sqlite
 //   CRIMGUARD_DATABASE_URL  postgres://user:password@localhost:5432/crimguard
-//   CRIMGUARD_SQLITE_PATH   SQLite file to use (default database/crimguard.db)
+//   CRIMGUARD_SQLITE_PATH   SQLite file to use (default data/crimguard.db)
 //
 // Both databases get the same interface: await db.query(sql, params) -> { rows, rowCount },
 // with `?` placeholders. Rows come back in the same shape from either one: numbers for
@@ -18,9 +22,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
-const { buildSqliteSchema, mapOutsideQuotes } = require('./sqlite-schema');
+const { buildSqliteSchema, upgradeSqliteSchema, mapOutsideQuotes } = require('./sqlite-schema');
 
-const DEFAULT_SQLITE_PATH = path.join(__dirname, '..', '..', 'database', 'crimguard.db');
+const ROOT = path.join(__dirname, '..', '..');
+const DEFAULT_SQLITE_PATH = path.join(ROOT, 'data', 'crimguard.db');
+const SEED_SQLITE_PATH = path.join(ROOT, 'database', 'crimguard.db');
 const MODES = ['auto', 'postgres', 'sqlite'];
 
 // SQLite can only report declared types for columns read straight from a table. These view
@@ -137,11 +143,22 @@ function toSqliteValue(value) {
   return value;
 }
 
-async function openSqlite(file, fallbackReason = null) {
-  if (file !== ':memory:' && !fs.existsSync(file)) await createSqliteDatabase(file);
+// A missing file is copied from `seed` when there is one, and built from the schema otherwise.
+// Either way it then gets any table added to database/crimguard/ since it was made.
+async function openSqlite(file, fallbackReason = null, { seed = null } = {}) {
+  if (file !== ':memory:' && !fs.existsSync(file)) {
+    if (seed && fs.existsSync(seed) && path.resolve(seed) !== path.resolve(file)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.copyFileSync(seed, `${file}.tmp`);
+      fs.renameSync(`${file}.tmp`, file);
+    } else {
+      await createSqliteDatabase(file);
+    }
+  }
   const db = new DatabaseSync(file);
   db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
   if (file === ':memory:') db.exec(buildSqliteSchema().sql);
+  else upgradeSqliteSchema(db);
   const kinds = columnKinds(db);
 
   // node:sqlite rows have a null prototype; copy into plain objects like the pg driver returns.
@@ -182,14 +199,15 @@ async function connectCrimGuard({
   mode = process.env.CRIMGUARD_DB || 'auto',
   databaseUrl = process.env.CRIMGUARD_DATABASE_URL,
   sqlitePath = process.env.CRIMGUARD_SQLITE_PATH || DEFAULT_SQLITE_PATH,
+  seedPath = SEED_SQLITE_PATH,
 } = {}) {
   if (!MODES.includes(mode)) throw new Error(`CRIMGUARD_DB must be one of: ${MODES.join(', ')}.`);
-  if (mode === 'sqlite') return openSqlite(sqlitePath);
+  if (mode === 'sqlite') return openSqlite(sqlitePath, null, { seed: seedPath });
   try {
     return await openPostgres(databaseUrl);
   } catch (err) {
     if (mode === 'postgres') throw err;
-    return openSqlite(sqlitePath, err.message);
+    return openSqlite(sqlitePath, err.message, { seed: seedPath });
   }
 }
 
@@ -199,4 +217,4 @@ function describeConnection(db) {
   return `${name} at ${db.location}${db.fallbackReason ? ` (${db.fallbackReason})` : ''}`;
 }
 
-module.exports = { connectCrimGuard, createSqliteDatabase, describeConnection, toSqliteValue, DEFAULT_SQLITE_PATH };
+module.exports = { connectCrimGuard, createSqliteDatabase, describeConnection, toSqliteValue, DEFAULT_SQLITE_PATH, SEED_SQLITE_PATH };

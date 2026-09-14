@@ -27,7 +27,7 @@ const PAGE_LINKS = [
 // to show without one. Its page, and the two scripts that talk to those endpoints, are left out
 // rather than shipped broken.
 const SERVER_ONLY_PAGES = new Set(['risk.html']);
-const SERVER_ONLY_SCRIPTS = ['telemetry.js', 'risk-panel.js', 'risk-console.js'];
+const SERVER_ONLY_SCRIPTS = ['telemetry.js', 'risk-panel.js', 'risk-console.js', 'biometrics.js', 'shared-files.js', 'step-up.js', 'identity-console.js'];
 
 function toStatic(html) {
   let out = html.replaceAll('"/static/', '"static/');

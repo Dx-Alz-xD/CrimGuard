@@ -253,6 +253,8 @@ function buildSqliteSchema() {
   const used = new Set();
   const tables = [];
   const output = [];
+  // Tables and indexes by name, so an existing database can be given the ones added since it was built.
+  const objects = [];
 
   const override = (name) => {
     if (!overrides.has(name)) return null;
@@ -271,8 +273,11 @@ function buildSqliteSchema() {
         const { table, sql } = translateTable(statement, enums);
         tables.push(table);
         output.push(...sql);
+        for (const piece of sql) objects.push({ name: piece.match(/^CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+(\w+)/i)[1], sql: piece });
       } else if (/^CREATE\s+(UNIQUE\s+)?INDEX\b/i.test(statement)) {
-        output.push(translateIndex(statement));
+        const sql = translateIndex(statement);
+        output.push(sql);
+        objects.push({ name: sql.match(/INDEX\s+(\w+)/i)[1], sql });
       } else if (objectName(statement, 'VIEW')) {
         const name = objectName(statement, 'VIEW');
         const replacement = override(name);
@@ -303,7 +308,22 @@ function buildSqliteSchema() {
   if (unused.length) throw new Error(`SQLite versions with no PostgreSQL counterpart: ${unused.join(', ')}`);
 
   const header = '-- Generated from database/crimguard/*.sql by src/db/sqlite-schema.js. Do not edit.';
-  return { sql: `${header}\n${output.join(';\n\n')};\n`, tables };
+  return { sql: `${header}\n${output.join(';\n\n')};\n`, tables, objects };
 }
 
-module.exports = { buildSqliteSchema, mapOutsideQuotes, SCHEMA_DIR };
+// Creates the tables and indexes a schema file defines that an existing SQLite database doesn't
+// have yet, e.g. one added in a later numbered file. Columns added to an existing table, views,
+// triggers and seed rows are not handled: those still need the database rebuilt. Returns the
+// names it created.
+function upgradeSqliteSchema(db) {
+  const existing = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type IN ('table', 'index')").all().map((row) => row.name));
+  const created = [];
+  for (const { name, sql } of buildSqliteSchema().objects) {
+    if (existing.has(name)) continue;
+    db.exec(sql);
+    created.push(name);
+  }
+  return created;
+}
+
+module.exports = { buildSqliteSchema, upgradeSqliteSchema, mapOutsideQuotes, SCHEMA_DIR };

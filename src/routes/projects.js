@@ -6,7 +6,7 @@ const { sendJson, noContent } = require('../http/response');
 const { projectFields } = require('../validation');
 const { isDecoyId } = require('../telemetry/honeytokens');
 
-function registerProjectRoutes(router, { stores, sessions, telemetry }) {
+function registerProjectRoutes(router, { stores, sessions, telemetry, protection }) {
   const { projects } = stores;
 
   // Taking the bait. Changing or deleting a decoy is recorded, every session this account has
@@ -27,6 +27,8 @@ function registerProjectRoutes(router, { stores, sessions, telemetry }) {
     stores.audit.record('security.honeytoken_tripped', {
       actor: user, target: user, ...client, details: { interaction, decoy: report.decoy, score: report.score },
     });
+    // The identity throttle turns it into a freeze: signing back in waits for an admin.
+    await protection?.onHoneytokenTrip(report);
     throw new HttpError(401, 'Your session has ended. Please sign in again.');
   }
 
@@ -66,6 +68,7 @@ function registerProjectRoutes(router, { stores, sessions, telemetry }) {
   router.post('/api/projects', async ({ req, res, client }) => {
     const user = sessions.requireUser(req);
     const fields = projectFields(await readJson(req));
+    await protection?.inspectText({ user, text: `${fields.name}\n${fields.description}`, channel: 'project_text', client });
     const project = projects.create(user.id, fields);
     telemetry.onAccess({
       user, tokenHash: req.sessionTokenHash, client, kind: 'project', id: project.id, name: project.name, action: 'write',
@@ -80,6 +83,7 @@ function registerProjectRoutes(router, { stores, sessions, telemetry }) {
     const existing = projects.get(params.id, user.id);
     if (!existing) throw new HttpError(404, 'Project not found.');
     const fields = projectFields(await readJson(req), existing);
+    await protection?.inspectText({ user, text: `${fields.name}\n${fields.description}`, channel: 'project_text', client });
     const project = projects.update(params.id, user.id, fields);
 
     // A rename is its own action: renaming something shortly before exporting it is one of the

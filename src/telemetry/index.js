@@ -66,6 +66,9 @@ function createTelemetry(db, {
   onError = (err) => console.error('Telemetry:', err.message),
   honeytokenScore = Number(process.env.RED_HONEYTOKEN_SCORE) || undefined,
   onHoneytokenTrip = null,
+  // Called with { crimUserId, redUserId, date, result } after a person's day is scored, so a
+  // response (src/protection/) can act on the new score straight away.
+  onScored = null,
 } = {}) {
   if (!db) return createNoop();
 
@@ -378,6 +381,7 @@ function createTelemetry(db, {
         scored += 1;
         const redUserId = person.okta_user_id ? Number(person.okta_user_id.slice(4)) : null;
         if (redUserId && date === today() && await honeytokens.plantIfNeeded(redUserId, result.finalScore)) planted += 1;
+        if (onScored && date === today()) await onScored({ crimUserId: person.id, redUserId, date, result });
       }
       return { date, people: people.length, snapshots, scored, planted };
     },
@@ -403,6 +407,7 @@ function createTelemetry(db, {
         const result = await scorer.scoreUserDay(crimUserId, date);
         // Crossing the threshold is what puts a decoy in front of them.
         if (result) await honeytokens.plantIfNeeded(user.id, result.finalScore);
+        if (result && onScored && date === today()) await onScored({ crimUserId, redUserId: user.id, date, result });
       }
       refreshed.set(key, { at: Date.now(), crimUserId });
       return crimUserId;

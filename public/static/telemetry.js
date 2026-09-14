@@ -64,49 +64,32 @@
   };
   const round = (value, places = 2) => (value === null ? null : Number(value.toFixed(places)));
 
-  // ---- typing rhythm (timing only, never the keys) --------------------------------
+  // ---- typing rhythm and pointer speed (from biometrics.js) -------------------------
+  //
+  // biometrics.js is the page's one keyboard and pointer listener: it skips password fields and
+  // reduces everything to timings before anything else sees it. This collector keeps its coarse
+  // averages from those signals rather than listening a second time.
 
-  let lastKeyDown = 0;
-  const downAt = new Map();
-
-  addEventListener('keydown', (event) => {
-    touch();
-    const now = performance.now();
-    if (lastKeyDown && now - lastKeyDown < 5000) sample.keyIntervals.push(now - lastKeyDown);
-    lastKeyDown = now;
-    // event.code is used only to notice Print Screen, and is never recorded.
-    if (event.code === 'PrintScreen') add({ type: 'screenshot' });
-    if (!downAt.has(event.code)) downAt.set(event.code, now);
-  }, { passive: true, capture: true });
-
-  addEventListener('keyup', (event) => {
-    const started = downAt.get(event.code);
-    if (started !== undefined) {
-      sample.keyDwells.push(performance.now() - started);
-      downAt.delete(event.code);
-    }
-  }, { passive: true, capture: true });
-
-  // ---- pointer and scrolling -------------------------------------------------------
-
-  let lastMove = null;
   let currentVelocity = 0;
-  addEventListener('mousemove', (event) => {
-    touch();
-    const now = performance.now();
-    if (lastMove) {
-      const seconds = (now - lastMove.t) / 1000;
-      if (seconds > 0.01 && seconds < 1) {
-        const distance = Math.hypot(event.clientX - lastMove.x, event.clientY - lastMove.y);
-        if (distance > 0) {
-          sample.mouseVelocities.push(distance / seconds);
-          // Smoothed, for the live readout only. Never sent: positions stay in this page.
-          currentVelocity = currentVelocity * 0.7 + (distance / seconds) * 0.3;
-        }
+  const biometrics = window.CrimGuardBiometrics;
+  if (biometrics) {
+    biometrics.subscribe((signal) => {
+      if (signal.type === 'activity') {
+        touch();
+        if (signal.key === 'PrintScreen') add({ type: 'screenshot' });
+      } else if (signal.type === 'keyInterval') {
+        if (signal.ms < 5000) sample.keyIntervals.push(signal.ms);
+      } else if (signal.type === 'keyDwell') {
+        sample.keyDwells.push(signal.ms);
+      } else if (signal.type === 'pointerVelocity') {
+        sample.mouseVelocities.push(signal.pxPerSecond);
+        // Smoothed, for the live readout only.
+        currentVelocity = currentVelocity * 0.7 + signal.pxPerSecond * 0.3;
       }
-    }
-    lastMove = { x: event.clientX, y: event.clientY, t: now };
-  }, { passive: true });
+    });
+  }
+
+  // ---- scrolling --------------------------------------------------------------------
 
   let lastScroll = null;
   addEventListener('scroll', () => {
