@@ -18,9 +18,14 @@ const { registerFileRoutes } = require('./routes/files');
 const { registerAdminRoutes } = require('./routes/admin');
 const { registerTelemetryRoutes } = require('./routes/telemetry');
 const { registerCrimGuardRoutes } = require('./routes/crimguard');
+const { registerStepUpRoutes, standingFor, openDuringStepUp } = require('./routes/step-up');
+const { registerEgressRoutes } = require('./routes/egress');
 const { createPageHandler } = require('./routes/pages');
 const { createTelemetry } = require('./telemetry');
 const { createProtection } = require('./protection');
+const { createReputationService } = require('./security/email-reputation');
+const { createProofOfWork } = require('./security/proof-of-work');
+const { createAiAnalyst } = require('./security/ai-analyst');
 
 const HOUSEKEEPING_INTERVAL_MS = 60 * 60 * 1000;
 // Often enough that the risk console shows today as it happens, cheap enough to leave running.
@@ -64,6 +69,10 @@ function createApp({
   now = Date.now,
   maxFileBytes = DEFAULT_MAX_FILE_BYTES,
   protectionOptions = {},
+  reputation = null,
+  proofOfWork = null,
+  ai = null,
+  env = process.env,
 }) {
   const stores = createStores(db);
   const passwords = createPasswordHasher({ pepper });
@@ -92,7 +101,19 @@ function createApp({
       await protection.onScored(scored);
     },
   });
-  const deps = { stores, sessions, passwords, throttle, limits: rateLimits, telemetry, crimguard, maxFileBytes, sessionPolicy, now, protection };
+  // Breach and domain checks on the address someone signs in with. Never in the blocking path of
+  // a login, and every failure is "not checked" rather than "clean" (security/email-reputation.js).
+  const emailReputation = reputation || createReputationService({
+    stores,
+    onError: (err) => console.error('Email reputation:', err.message),
+  });
+  // A cost the browser pays before a sign-in or sign-up is looked at (security/proof-of-work.js).
+  const pow = proofOfWork || createProofOfWork({ now });
+  // Writes the paragraph an analyst would otherwise write by hand. It is handed catalogue keys
+  // and numbers and nothing else - see the note at the top of security/ai-analyst.js on why an
+  // app that detects data going into models must not send any of its own.
+  const analyst = ai || createAiAnalyst({ onError: (err) => console.error('AI analyst:', err.message) });
+  const deps = { stores, sessions, passwords, throttle, limits: rateLimits, telemetry, crimguard, maxFileBytes, sessionPolicy, now, protection, reputation: emailReputation, pow, env, ai: analyst };
 
   const router = createRouter();
   registerAuthRoutes(router, deps);
@@ -101,9 +122,11 @@ function createApp({
   registerFileRoutes(router, deps);
   registerAdminRoutes(router, deps);
   registerTelemetryRoutes(router, deps);
+  registerStepUpRoutes(router, deps);
+  registerEgressRoutes(router, deps);
   protection.register(router, deps);
   registerCrimGuardRoutes(router, deps);
-  const handlePage = createPageHandler({ db, sessions, telemetry });
+  const handlePage = createPageHandler({ db, sessions, telemetry, trustProxy });
 
   async function route(req, res) {
     applySecurityHeaders(res, { https: isHttps(req) });
@@ -129,6 +152,23 @@ function createApp({
     if (method !== 'GET' && method !== 'HEAD') assertSameOrigin(req, { trustProxy, binary: found?.options?.body === 'binary' });
     if (!found) throw new HttpError(404, 'Not found.');
     if (found.allowed) throw new HttpError(405, 'Method not allowed.', { headers: { Allow: found.allowed.join(', ') } });
+
+    // A session whose score has stayed high since sign-in reaches nothing but the step-up until it
+    // confirms who is on it. Checked after routing so a 404 stays a 404, and skipped for the few
+    // paths that would otherwise leave no way to answer it or to sign out.
+    if (!openDuringStepUp(pathname)) {
+      const user = sessions.current(req);
+      if (user) {
+        const standing = standingFor({
+          stores, user, tokenHash: req.sessionTokenHash, startedAt: req.sessionStartedAt, now: now(),
+        });
+        if (standing.required) {
+          throw Object.assign(new HttpError(403, 'Confirm it’s you to carry on.', { code: 'mfa_required' }), {
+            details: { atScore: standing.score, lockedOut: Boolean(standing.lockedOut) },
+          });
+        }
+      }
+    }
     await protection.guard(req, pathname);
 
     return found.handler({ req, res, url, params: found.params, client });
@@ -139,6 +179,8 @@ function createApp({
       stores.sessions.purgeExpired(now());
       throttle.purge(Math.max(...Object.values(rateLimits).map((limit) => limit.windowMs)));
       stores.audit.purge();
+      pow.purge();
+      stores.signals.purge();
     } catch (err) {
       console.error('Housekeeping failed:', err);
     }
@@ -184,6 +226,9 @@ function createApp({
       if (res.headersSent) return res.destroy();
       const body = { error: status === 500 ? 'Something went wrong.' : err.message };
       if (err.code && status !== 500) body.code = err.code;
+      // Enough for the page to act on a refusal rather than dead-end on it - what the departure
+      // gate is holding, and whether an ask for it is already in the queue.
+      if (err.details && status !== 500) body.details = err.details;
       sendJson(res, status, body, status === 500 ? {} : err.headers);
     });
   });

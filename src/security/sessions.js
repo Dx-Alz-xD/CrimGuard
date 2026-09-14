@@ -56,6 +56,9 @@ function createSessionManager({ sessions, policy, secureCookies, now = Date.now 
       mustChangePassword: row.must_change_password === 1,
     };
     req.sessionTokenHash = tokenHash;
+    // When this session began. The OTP step-up waits for a high score to *stay* high for a while
+    // after sign-in rather than firing the moment someone lands (routes/step-up.js).
+    req.sessionStartedAt = row.created_at;
     return req.sessionUser;
   }
 

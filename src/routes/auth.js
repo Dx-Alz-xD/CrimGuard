@@ -71,8 +71,37 @@ async function createAccount({ users, passwords, files, roles, audit }, body, { 
 }
 
 function registerAuthRoutes(router, deps) {
-  const { stores, sessions, passwords, throttle, limits, telemetry, protection } = deps;
+  const { stores, sessions, passwords, throttle, limits, telemetry, protection, reputation, pow } = deps;
   const { users, audit } = stores;
+
+  // Every sign-in and sign-up carries a solved proof of work. It is checked before the password so
+  // that guessing costs CPU whether or not the address exists, and the answer is the same either
+  // way - a bot cannot use the difference to tell a real account from a made-up one.
+  //
+  // The failure counter feeding difficultyFor is the per-IP one the throttle already keeps, so a
+  // client that has been guessing pays more for each further attempt.
+  function assertSolved(body, client, { what }) {
+    if (!pow) return;
+    const reason = pow.check(body?.challenge, body?.solution);
+    if (!reason) return;
+    // 'expired' and 'already_used' are ordinary in a tab left open, and the page just fetches
+    // another; the rest mean something is wrong with the client, and read the same from outside.
+    const retry = reason === 'expired' || reason === 'already_used';
+    throw new HttpError(
+      400,
+      retry
+        ? 'That sign-in check timed out. Try again.'
+        : `This ${what} could not be verified. Reload the page and try again.`,
+      { code: retry ? 'challenge_stale' : 'challenge_failed' },
+    );
+  }
+
+  // Issued to anyone: it carries no secret and spends nothing until it is solved and used.
+  router.get('/api/auth/challenge', async ({ res, client }) => {
+    if (!pow) return sendJson(res, 200, { required: false });
+    const failed = throttle.failures(`login:ip:${client.ip}`, limits.loginPerIp.windowMs);
+    sendJson(res, 200, { required: true, ...pow.issue({ failures: failed }) });
+  });
 
   router.post('/api/signup', async ({ req, res, client }) => {
     const ipKey = `signup:ip:${client.ip}`;
@@ -81,15 +110,22 @@ function registerAuthRoutes(router, deps) {
     // Every attempt counts here, not just failures, to slow down mass account creation.
     throttle.fail(ipKey, limits.signupPerIp);
 
-    const user = await createAccount({ ...stores, passwords }, await readJson(req), { role: SIGNUP_ROLE, client });
+    const body = await readJson(req);
+    assertSolved(body, client, { what: 'sign-up' });
+    const user = await createAccount({ ...stores, passwords }, body, { role: SIGNUP_ROLE, client });
     const tokenHash = sessions.start(req, res, user);
     audit.record('account.signup', { actor: user, target: user, ...client });
     telemetry.onLogin({ user, client, tokenHash });
+    // The first time Red sees this address is the first time worth checking it. Not awaited, for
+    // the same reason it isn't at sign-in: the account already exists and a slow provider must
+    // not hold up the response.
+    reputation?.refresh(user).catch(() => {});
     sendJson(res, 201, { user, redirect: homeFor(user) });
   });
 
   router.post('/api/login', async ({ req, res, client }) => {
     const body = await readJson(req);
+    assertSolved(body, client, { what: 'sign-in' });
     const email = normalizeEmail(body.email);
     const password = typeof body.password === 'string' ? body.password : '';
     const portal = body.portal === 'admin' ? 'admin' : 'user';
@@ -127,6 +163,10 @@ function registerAuthRoutes(router, deps) {
     const tokenHash = sessions.start(req, res, row);
     audit.record('login.succeeded', { actor: row, target: row, ...client, details: { portal, upgradedHash: needsRehash } });
     telemetry.onLogin({ user: publicUser(row), client, tokenHash });
+
+    // Deliberately not awaited. The session is already issued, so a slow or unreachable provider
+    // costs this request nothing, and the answer lands on the person's risk panel when it arrives.
+    reputation?.refresh(publicUser(row)).catch(() => {});
 
     sendJson(res, 200, { user: publicUser(row), redirect: homeFor(row), mustChangePassword: row.must_change_password === 1 });
   });

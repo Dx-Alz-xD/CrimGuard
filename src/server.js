@@ -11,6 +11,7 @@ const { connectCrimGuard, describeConnection } = require('./db/crimguard');
 const { DuplicateEmailError } = require('./db/users');
 const { createApp } = require('./app');
 const { createPasswordHasher } = require('./security/passwords');
+const { assertDemoOtpAllowed } = require('./security/risk-signals');
 const { newPassword } = require('./security/tokens');
 
 function fail(message) {
@@ -67,6 +68,14 @@ async function main() {
     return null;
   });
   if (crimguard) console.log(`CrimGuard risk database: ${describeConnection(crimguard)}`);
+
+  // The step-up still accepts a fixed code. Refuse to start a production build that has not said
+  // out loud that it knows (security/risk-signals.js), rather than shipping a factor anyone can guess.
+  try {
+    assertDemoOtpAllowed();
+  } catch (err) {
+    fail(err.message);
+  }
 
   const server = createApp({
     db,

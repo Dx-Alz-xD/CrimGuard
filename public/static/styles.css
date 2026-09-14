@@ -1570,3 +1570,37 @@ select {
 .cg-override-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px 14px; }
 .cg-override-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; font-size: 12px; color: var(--slate); }
 .cg-override-field input, .cg-override-field select { height: 32px; font-size: 13px; }
+
+/* The risk panel's signals: what the sign-in address checks found, and what is moving the score. */
+.risk-signals:empty { display: none; }
+.risk-signals {
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 4px;
+}
+.risk-signals-title {
+  margin: 0 0 2px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.risk-signal {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  font-size: 12px;
+}
+.risk-signal-label { color: var(--muted); }
+.risk-signal-value { font-weight: 600; margin-left: auto; }
+.risk-signal-value[data-sign='up'] { color: var(--danger, #d64545); }
+.risk-signal-value[data-sign='down'] { color: var(--ok, #2e9e6b); }
+.risk-signal-note { flex-basis: 100%; color: var(--muted); font-size: 11px; }
+.risk-signal.is-total { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; }
+
+/* Two actions in a page header: "Add files" beside "New project". */
+.page-header-actions { display: flex; gap: 8px; flex-wrap: wrap; }

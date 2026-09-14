@@ -78,6 +78,21 @@
         </div>
 
         <div>
+          <h2>Your email address, and who else sees it</h2>
+          <p class="matrix-intro">
+            When you sign up or sign in, Red checks your address against two outside services and
+            puts what they say into your score: <strong>XposedOrNot</strong>, for whether the
+            address appears in known breach corpora, and <strong>mailcheck</strong>, for whether
+            its domain is a throwaway, a forwarder, blocklisted, or not a real mail domain. Your
+            address is sent to both. Nothing else about you is, and neither result can keep you
+            out: it only moves a number you can read yourself, on the Risk panel, alongside which
+            breaches were found. Neither is evidence of wrongdoing, and both are worth few points.
+            If a service cannot be reached the answer is recorded as <em>not checked</em>, never as
+            clean. An operator can switch the checks off entirely with
+            <code>RED_EMAIL_CHECKS=0</code>, and without <code>RED_MAILCHECK_KEY</code> the domain
+            half never runs.
+          </p>
+
           <h2>Who can see it</h2>
           <p class="matrix-intro">
             You can see all of it about yourself. Admins and the CEO can see everyone's scores and

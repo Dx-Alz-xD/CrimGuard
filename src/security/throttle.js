@@ -36,12 +36,20 @@ function createThrottle(db, { now = Date.now } = {}) {
     return blockedUntil > t ? Math.ceil((blockedUntil - t) / 1000) : 0;
   }
 
+  // Failures recorded in the current window, or 0 once it has lapsed. Read-only: used to make the
+  // sign-in proof-of-work harder for a key that has been getting it wrong.
+  function failures(key, windowMs) {
+    const row = q.get.get(key);
+    if (!row) return 0;
+    return now() - row.window_start >= windowMs ? 0 : row.attempts;
+  }
+
   const reset = (key) => { q.remove.run(key); };
 
   // Rows whose window and block have both lapsed carry no information.
   const purge = (maxWindowMs) => { const t = now(); q.purge.run(t - maxWindowMs, t); };
 
-  return { retryAfter, fail, reset, purge };
+  return { retryAfter, failures, fail, reset, purge };
 }
 
 module.exports = { createThrottle };

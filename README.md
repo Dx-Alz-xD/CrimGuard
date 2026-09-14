@@ -183,6 +183,9 @@ accounts and projects.
 | `CRIMGUARD_DB`             | `auto`                  | `postgres` to refuse the SQLite fallback, `sqlite` to skip PostgreSQL entirely. |
 | `CRIMGUARD_SQLITE_PATH`    | `database/crimguard.db` | Where the SQLite copy of the risk database lives. |
 | `RED_HONEYTOKEN_SCORE`     | `40`                    | Risk score at which a decoy project is planted for an account. |
+| `RED_MAILCHECK_KEY`        | none                    | RapidAPI key for mailcheck, which answers whether an address's domain is disposable, forwarded, blocklisted or undeliverable. Without it that half of the check never runs; the breach check needs no key. |
+| `RED_EMAIL_CHECKS`         | on                      | Set to `0` to send no address anywhere: neither the breach check nor the domain check runs. |
+| `RED_ALLOW_DEMO_OTP`       | off                     | The step-up still accepts the fixed demo code `123456`. Production refuses to start unless this is `1`, so a build with a guessable second factor cannot ship by accident. |
 
 The admin and CEO variables only matter until someone holds that role. After that,
 manage people from **People & roles** in the admin console.
@@ -392,6 +395,39 @@ their own role.
 Scores are computed in the CrimGuard database but access is decided in SQL against `red.db`, so
 each score is copied into `user_risk_state` as it is produced.
 
+### Leaving
+
+Risk limiting only cuts **clearance**, and a file shared with one person **by name** was never a
+clearance decision: it opens at any confidentiality, and limiting leaves it alone on purpose, so
+narrowing someone's reach doesn't lock them out of the file a colleague handed them to work on.
+
+That is the right default until someone is leaving — which is when insider IP theft clusters, and
+is the one door risk limiting doesn't close. So inside the last **14 days** before a leaving date,
+and only there, that door needs an admin:
+
+| The person | The file | What happens |
+| ---------- | -------- | ------------ |
+| Leaving in 14 days or fewer | Shared with them **by name**, **above** their clearance | Refused, with a request to make |
+| Leaving | Within their clearance, shared with their role, or their own | Opens as it always did |
+| Not leaving | Anything | Opens as it always did |
+
+- **The file is still listed.** Refusing is not hiding: they have to be able to see it to ask for
+  it. The refusal carries the ask, so **Shared with me** offers it instead of dead-ending.
+- **The request lands in Access requests** in the admin console, with the file, its level, who is
+  asking, their reason and how many days they have left.
+- **Releasing a file takes the clearance the file needs**, exactly as changing who can see it does:
+  an admin cannot approve their way into a Secret file, and only the CEO can.
+- **An approval is a key to one file, and expires after 7 days**, so nobody has to remember to take
+  it back. A denial leaves the file shut.
+- **Reaching for a held file is recorded** — in the activity log and as a `least_privilege_violation`
+  the risk engine sees. It is the only trace Red would otherwise keep of someone trying on the way out.
+
+The leaving date comes from the HR context in the risk console (a leaving date on the person, or a
+dated `resignation_notice` / `termination_scheduled` event — the same facts the HR amplifier ramps
+on). Access is decided in SQL against `red.db`, so it is copied into `user_departure_state` as it
+changes, the same arrangement as the score. The window, the approval's life and the rule itself are
+in `src/security/departure.js` and nowhere else.
+
 ### Starting access
 
 Two ways access arrives without anyone granting it file by file.
@@ -449,12 +485,14 @@ src/
                          files.js (files, sharing, access), admin.js (people, roles, activity),
                          crimguard.js (the dashboard's data), pages.js (HTML, static, health)
   security/              access.js (roles, clearance, who may change access),
+                         departure.js (the notice window, and what it holds back),
                          passwords.js (pepper + Argon2id), password-policy.js, sessions.js,
                          throttle.js, tokens.js, headers.js
   http/                  router, request parsing, responses, cookies, errors
   db/                    index.js (open, pragmas), migrate.js, and one query module per area:
                          users.js, sessions.js, projects.js, files.js (and who can see
-                         a file), roles.js, people.js (the dashboard), audit.js
+                         a file), roles.js, people.js (the dashboard), risk.js,
+                         departures.js (leaving dates and access requests), audit.js
   telemetry/             the risk pipeline: coverage.js (how each of the 100 variables is
                          collected), subjects.js, events.js, ingest.js, features.js,
                          snapshots.js, scoring.js, honeytokens.js, patterns.js, geo.js
@@ -494,6 +532,8 @@ docker-compose.yml       one-command self-hosting with a data volume
 | `PUT /api/projects/:id/files/:fileId/content` | own projects; raw bytes, replaces the contents |
 | `DELETE /api/projects/:id/files/:fileId` | own projects |
 | `GET /api/files/shared`                | signed in, files other people shared with you or your role |
+| `POST /api/files/:fileId/access-request` `{reason}` | signed in, only for a file the departure gate is holding |
+| `GET /api/me/access-requests`          | signed in, your own requests and what came back |
 | `GET /api/files/:fileId/download`      | anyone who may see the file; otherwise 404 |
 | `GET /api/files/:fileId/access`        | the owner, admins and the CEO |
 | `PUT /api/files/:fileId/access` `{confidentiality, roles, people}` | admin or CEO, files up to their clearance; replaces the whole list |
@@ -506,6 +546,8 @@ docker-compose.yml       one-command self-hosting with a data volume
 | `PATCH /api/admin/users/:id/password`  | the same; signs that account out everywhere |
 | `DELETE /api/admin/users/:id`          | the same |
 | `GET /api/admin/audit?limit&before`    | admin or CEO, newest first |
+| `GET /api/admin/access-requests?status` | admin or CEO, the queue plus who is leaving |
+| `POST /api/admin/access-requests/:id/decision` `{decision, note}` | admin or CEO, files up to their clearance; approve or deny |
 | `GET /api/crimguard/overview`          | admin or CEO, everyone with their counts, presence and score |
 | `GET /api/crimguard/people/:id`        | admin or CEO, one person's record; file names above your clearance left out |
 | `POST /api/telemetry`                  | signed in, own behaviour only |

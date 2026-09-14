@@ -17,6 +17,7 @@
     <nav class="app-nav" aria-label="Sections">
       <a href="#projects" data-tab="projects">My projects</a>
       <a href="#people" data-tab="people">People &amp; roles</a>
+      <a href="#access" data-tab="access">Access requests <span class="count" id="access-count" hidden></span></a>
       <a href="#activity" data-tab="activity">Activity</a>
       <a href="/crimguard">CrimGuard</a>
       <a href="/admin/risk">Risk</a>
@@ -46,7 +47,10 @@
         <h1>My projects</h1>
         <p>Your own projects. Other admins and the CEO can see them in CrimGuard.</p>
       </div>
-      <button class="btn btn-primary" type="button" data-new-project>New project</button>
+      <div class="page-header-actions">
+        <button class="btn btn-secondary" type="button" data-add-files>Add files</button>
+        <button class="btn btn-primary" type="button" data-new-project>New project</button>
+      </div>
     </header>
     <div id="projects"></div>
   </main>
@@ -103,6 +107,34 @@
           <tbody id="role-rows"></tbody>
         </table>
       </div>
+    </section>
+  </main>
+
+  <main class="page" data-panel="access" hidden>
+    <header class="page-header">
+      <div>
+        <h1>Access requests</h1>
+        <p id="access-summary">People working their notice have to ask before opening a file that was shared with them by name and sits above their clearance.</p>
+      </div>
+    </header>
+
+    <div class="toolbar">
+      <div class="filter" id="access-filter" role="group" aria-label="Filter requests">
+        <button type="button" data-status="pending" aria-pressed="true">Waiting <span class="count"></span></button>
+        <button type="button" data-status="" aria-pressed="false">All</button>
+      </div>
+    </div>
+
+    <div id="access-requests"></div>
+
+    <section class="page-section" aria-labelledby="leaving-title">
+      <header class="section-header">
+        <div>
+          <h2 id="leaving-title">On their way out</h2>
+          <p>Leaving dates come from the HR context in the Risk console.</p>
+        </div>
+      </header>
+      <div id="access-leaving"></div>
     </section>
   </main>
 

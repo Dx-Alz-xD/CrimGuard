@@ -94,6 +94,10 @@
   const scoreMeta = h('p', { class: 'risk-score-meta' }, 'Loading your assessment…');
   const scoredAge = h('span', { class: 'risk-scored-age' }, '');
   const coverageLine = h('p', { class: 'risk-coverage' });
+  // What the sign-in checks found about this address, and anything adding to or coming off the
+  // engine's score. Shown for the same reason the variables below are: an assessment somebody is
+  // not allowed to read is worse than one they are.
+  const signalsBox = h('div', { class: 'risk-signals' });
   const list = h('div', { class: 'risk-list' });
 
   const onlyFilled = h('input', {
@@ -151,6 +155,7 @@
     h('label', { class: 'risk-toggle', for: 'risk-only-filled' }, onlyFilled, 'Only variables with a value'),
     refreshButton),
   liveSection,
+  signalsBox,
   h('div', { class: 'risk-scroll' }, list),
   coverageLine);
 
@@ -224,8 +229,51 @@
   let lastScore = null;
   let scoredAt = null;
 
+  // One line per fact, each saying what it is worth, so the number can be taken apart rather than
+  // simply believed.
+  function renderSignals(data) {
+    const rows = [];
+    const rep = data.reputation;
+    if (rep) {
+      if (rep.breached === true) {
+        rows.push(['Address in known breaches', rep.breachCount === 1 ? 'one breach' : `${rep.breachCount} breaches`,
+          rep.breaches.slice(0, 4).join(', ')]);
+      } else if (rep.breached === false) {
+        rows.push(['Address in known breaches', 'none found', '']);
+      }
+      if (rep.disposable === true) rows.push(['Domain', 'disposable or forwarding', rep.detail?.text || '']);
+      else if (rep.valid === false) rows.push(['Domain', 'does not accept mail', rep.detail?.reason || '']);
+      else if (rep.blocked === true) rows.push(['Domain', 'on the provider blocklist', rep.detail?.reason || '']);
+      if (rep.detail?.possibleTypo?.length) rows.push(['Did you mean', rep.detail.possibleTypo.join(', '), '']);
+      if (rep.breached === null && rep.disposable === null) rows.push(['Address checks', 'not checked', 'the service could not be reached']);
+    }
+
+    const adjustments = data.adjustments || [];
+    if (!rows.length && !adjustments.length) {
+      signalsBox.replaceChildren();
+      return;
+    }
+    signalsBox.replaceChildren(
+      h('h3', { class: 'risk-signals-title' }, 'Your address, and what is moving your score'),
+      ...rows.map(([label, value, note]) => h('p', { class: 'risk-signal' },
+        h('span', { class: 'risk-signal-label' }, label),
+        h('span', { class: 'risk-signal-value' }, value),
+        note ? h('span', { class: 'risk-signal-note' }, note) : null)),
+      ...adjustments.map((a) => h('p', { class: 'risk-signal' },
+        h('span', { class: 'risk-signal-label' }, a.reason),
+        h('span', { class: 'risk-signal-value', 'data-sign': a.delta < 0 ? 'down' : 'up' },
+          `${a.delta > 0 ? '+' : ''}${a.delta.toFixed(0)} points`))),
+      data.effectiveScore !== null && data.engineScore !== null && data.effectiveScore !== data.engineScore
+        ? h('p', { class: 'risk-signal is-total' },
+          h('span', { class: 'risk-signal-label' }, 'Score after these'),
+          h('span', { class: 'risk-signal-value' }, Number(data.effectiveScore).toFixed(1)))
+        : null,
+    );
+  }
+
   function render(data) {
     latest = data;
+    renderSignals(data);
     const score = data.score;
 
     if (score) {

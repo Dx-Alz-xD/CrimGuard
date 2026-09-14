@@ -6,6 +6,8 @@ const { readJson, readBinary } = require('../http/request');
 const { sendJson, noContent } = require('../http/response');
 const { CONFIDENTIALITY, MIN_LEVEL, MAX_LEVEL, canManageFileAccess, isLevel, isPrivileged, outranks } = require('../security/access');
 const { isDecoyId } = require('../telemetry/honeytokens');
+const { requestView } = require('../db/departures');
+const { uploadBlocked, UPLOAD_BLOCK_SCORE } = require('../security/risk-signals');
 const { singleLine } = require('../validation');
 
 // How many roles and people one file can be shared with in a single save.
@@ -75,7 +77,45 @@ function idList(value, what, max) {
 }
 
 function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes, protection }) {
-  const { projects, files, roles, users, audit } = stores;
+  const { projects, files, roles, users, audit, departures } = stores;
+
+  // While someone is working their notice, a file handed to them by name that sits above their
+  // clearance needs an admin to release it (security/departure.js says why). The file stays listed
+  // and is refused here, at the point of copying, with the ask attached - hiding it would leave
+  // them nothing to ask for.
+  function departureGate(user, file) {
+    return departures.gate({
+      userId: user.id,
+      fileId: file.id,
+      confidentiality: file.confidentiality,
+      ownerId: file.owner_id,
+      clearance: file.clearance,
+    });
+  }
+
+  function refuse(gate) {
+    return new HttpError(403, `${gate.explanation} Ask an admin to release it.`, { code: 'access_request_required' });
+  }
+
+  // Limiting narrows what a risky account can read (security/limits.js). This is the other
+  // direction: at the same threshold it stops adding to the pile it might be taking. Reading their
+  // own files, renaming and deleting are left alone - the point is to stop new material arriving
+  // in a place the detectors have already flagged, not to freeze someone out of their own work.
+  //
+  // It runs on the effective score, so proving who you are at the step-up lifts it, and an
+  // exemption an admin has granted lifts it too, exactly as it lifts limiting.
+  function assertMayUpload(user) {
+    const limit = stores.risk.limitFor(user.id);
+    if (!limit) return;
+    const score = stores.signals.effective(user.id, limit.score);
+    if (!uploadBlocked({ score, exempt: Boolean(limit.exemption) })) return;
+    throw new HttpError(
+      403,
+      `Uploads are paused on this account while its risk score is ${score.toFixed(0)} (${UPLOAD_BLOCK_SCORE} or above). `
+      + 'You can still open, rename and delete what is already here. An admin can lift it.',
+      { code: 'uploads_blocked' },
+    );
+  }
 
   function ownProject(user, projectId) {
     const project = projects.get(projectId, user.id);
@@ -129,8 +169,9 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
     const user = sessions.requireUser(req);
     if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, client });
     const project = ownProject(user, params.id);
+    // Both checked before reading the body, so a refusal doesn't cost a full upload first.
+    assertMayUpload(user);
     const name = fileNameFromHeader(req.headers['x-file-name']);
-    // Checked before reading the body, so a clash doesn't cost a full upload.
     if (files.nameTaken(project.id, name)) throw duplicateName(name);
     const content = await readBinary(req, res, maxFileBytes);
     await protection?.inspectUpload({ user, content, client });
@@ -181,6 +222,8 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
     const user = sessions.requireUser(req);
     if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, client });
     const project = ownProject(user, params.id);
+    // Replacing a file's contents is putting new material in, so it meets the same rule.
+    assertMayUpload(user);
     if (!files.get(params.fileId, project.id)) throw fileNotFound();
     const content = await readBinary(req, res, maxFileBytes);
     await protection?.inspectUpload({ user, content, client });
@@ -231,6 +274,21 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
     const user = sessions.requireUser(req);
     const file = files.visibleContent(params.fileId, user.id);
     if (!file) throw fileNotFound();
+
+    const gate = departureGate(user, file);
+    if (gate.gated) {
+      // Reaching for a file the gate holds is a signal in its own right, and the only trace Red
+      // would otherwise keep of someone doing it on their way out.
+      telemetry.onViolation({ user, tokenHash: req.sessionTokenHash, client, path: `/api/files/${file.id}/download` });
+      audit.record('file.access_blocked', {
+        actor: user, target: users.findById(file.owner_id) || null, ...client,
+        details: { file: file.id, confidentiality: file.confidentiality, clearance: file.clearance, daysLeft: gate.daysLeft },
+      });
+      throw Object.assign(refuse(gate), {
+        details: { file: { id: file.id, name: file.name, confidentiality: file.confidentiality }, daysLeft: gate.daysLeft, request: gate.pending ? requestView(gate.pending) : null },
+      });
+    }
+
     const project = { id: file.project_id, name: file.project_name };
     reportAccess({ req, client, user, project }, 'download', { bytes: file.content.byteLength });
     // Taking a copy of someone else's file is what the activity log is for; your own files are not logged.
@@ -241,6 +299,35 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
       });
     }
     sendDownload(res, file.name, file.content);
+  });
+
+  // Asking for a file the gate is holding. One open ask per person per file: asking twice is the
+  // same ask, so a second click returns the first rather than filling the queue.
+  router.post('/api/files/:fileId/access-request', async ({ req, res, params, client }) => {
+    const user = sessions.requireUser(req);
+    const file = files.visible(params.fileId, user.id);
+    if (!file) throw fileNotFound();
+    const gate = departureGate(user, file);
+    if (!gate.gated) throw new HttpError(400, 'You can already open this file.');
+
+    const body = await readJson(req);
+    const reason = singleLine(body.reason ?? '').slice(0, 300);
+    const { request, created } = departures.request({
+      userId: user.id, fileId: file.id, confidentiality: file.confidentiality, clearance: file.clearance, reason,
+    });
+    if (created) {
+      audit.record('file.access_requested', {
+        actor: user, target: users.findById(file.owner_id) || null, ...client,
+        details: { file: file.id, request: request.id, confidentiality: file.confidentiality },
+      });
+    }
+    sendJson(res, created ? 201 : 200, { request: requestView(request) });
+  });
+
+  // What this account has asked for and what came back, so the page can say so without guessing.
+  router.get('/api/me/access-requests', async ({ req, res }) => {
+    const user = sessions.requireUser(req);
+    sendJson(res, 200, { requests: departures.mine(user.id).map(requestView) });
   });
 
   const accessView = (file, access, viewer) => ({

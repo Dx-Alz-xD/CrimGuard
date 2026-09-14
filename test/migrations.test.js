@@ -18,9 +18,10 @@ test('a fresh database gets every table, and reopening it applies nothing twice'
     const db = openDb(file);
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name);
     assert.deepEqual(tables, [
-      'audit_log', 'auth_throttle', 'file_role_grants', 'file_user_grants', 'project_files',
-      'project_role_grants', 'projects', 'risk_limit_exemptions', 'roles', 'schema_migrations', 'sessions',
-      'user_credentials', 'user_profiles', 'user_risk_state', 'users',
+      'audit_log', 'auth_throttle', 'email_reputation', 'file_access_requests', 'file_role_grants',
+      'file_user_grants', 'mfa_verifications', 'project_files', 'project_role_grants', 'projects',
+      'risk_adjustments', 'risk_limit_exemptions', 'roles', 'schema_migrations', 'sessions',
+      'user_credentials', 'user_departure_state', 'user_profiles', 'user_risk_state', 'users',
     ]);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get().n;
     assert.equal(versions, fs.readdirSync(MIGRATIONS_DIR).filter((name) => name.endsWith('.sql')).length);
@@ -32,7 +33,7 @@ test('a fresh database gets every table, and reopening it applies nothing twice'
 
     if (process.platform !== 'win32') assert.equal(fs.statSync(file).mode & 0o777, 0o600, 'the database file is private');
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* cleanup must not mask a real failure */ }
   }
 });
 
@@ -65,7 +66,7 @@ test('a database from before migrations is upgraded in place, and its people can
       app.db.close();
     }
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* cleanup must not mask a real failure */ }
   }
 });
 
@@ -107,6 +108,6 @@ test('moving to roles rebuilds users without losing anything attached to an acco
     assert.equal(db.prepare('SELECT COUNT(*) AS n FROM sessions').get().n, 0);
     db.close();
   } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* cleanup must not mask a real failure */ }
   }
 });

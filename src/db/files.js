@@ -2,6 +2,7 @@
 
 const { PRIVILEGED_ROLES } = require('../security/access');
 const { TIERS, NO_ACCESS } = require('../security/limits');
+const { LIVE_DELTA_SQL } = require('../security/risk-signals');
 
 class DuplicateFileNameError extends Error {}
 
@@ -25,9 +26,13 @@ const PRIVILEGED = PRIVILEGED_ROLES.map((role) => `'${role}'`).join(', ');
 // clearance stays available as role_clearance, because handing out roles and managing files
 // are judged on what someone *is*, not on how risky they currently look.
 const BASELINE = '(SELECT CAST(AVG(confidentiality) AS INTEGER) FROM project_files)';
+// The score limiting runs on is the engine's plus every live adjustment (security/risk-signals.js):
+// proving who you are lowers it, a breached or throwaway address raises it. Clamped here the same
+// way effectiveScore() clamps it in JavaScript, so both sides of the app agree on one number.
+const EFFECTIVE_SCORE = `MIN(100.0, MAX(0.0, s.score + ${LIVE_DELTA_SQL}))`;
 const limitCase = (then, otherwise) => `CASE
       WHEN e.user_id IS NOT NULL OR s.score IS NULL THEN ${otherwise}
-      ${TIERS.map((tier) => `WHEN s.score >= ${tier.minScore} THEN ${then(tier)}`).join(' ')}
+      ${TIERS.map((tier) => `WHEN ${EFFECTIVE_SCORE} >= ${tier.minScore} THEN ${then(tier)}`).join(' ')}
       ELSE ${otherwise} END`;
 
 const person = (alias, param) => `${alias} AS (
@@ -73,19 +78,20 @@ function createFileStore(db, { transaction }) {
 
     visible: db.prepare(`
       WITH ${person('v', '$viewer')}
-      SELECT ${columns}, ${project}
+      SELECT ${columns}, ${project}, v.clearance
       FROM project_files f JOIN projects p ON p.id = f.project_id JOIN users o ON o.id = p.owner_id, v
       WHERE f.id = $file AND ${visibleTo('v')}`),
     visibleContent: db.prepare(`
       WITH ${person('v', '$viewer')}
-      SELECT f.id, f.name, f.content, p.id AS project_id, p.name AS project_name, p.owner_id
+      SELECT f.id, f.name, f.content, f.confidentiality, p.id AS project_id, p.name AS project_name,
+             p.owner_id, v.clearance, v.role_clearance
       FROM project_files f JOIN projects p ON p.id = f.project_id, v
       WHERE f.id = $file AND ${visibleTo('v')}`),
     // Files other people shared with `t`, limited to what the viewer `v` may see. When someone looks at
     // their own list the two are the same person.
     sharedWith: db.prepare(`
       WITH ${person('t', '$person')}, ${person('v', '$viewer')}
-      SELECT f.id, f.name, f.type, f.size, f.confidentiality, f.updated_at, ${project},
+      SELECT f.id, f.name, f.type, f.size, f.confidentiality, f.updated_at, ${project}, t.clearance,
              EXISTS (SELECT 1 FROM file_user_grants g WHERE g.file_id = f.id AND g.user_id = t.id) AS by_name
       FROM project_files f JOIN projects p ON p.id = f.project_id JOIN users o ON o.id = p.owner_id, t, v
       WHERE p.owner_id <> t.id AND ${sharedWith('t')} AND ${visibleTo('v')}

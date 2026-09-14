@@ -8,6 +8,7 @@ const { readJson } = require('../http/request');
 const { sendJson, noContent } = require('../http/response');
 const { DuplicateRoleError } = require('../db/roles');
 const { MIN_LEVEL, MAX_LEVEL, isLevel, isPrivileged, outranks } = require('../security/access');
+const { queueView, requestView } = require('../db/departures');
 const { newPassword, singleLine } = require('../validation');
 const { createAccount } = require('./auth');
 
@@ -27,8 +28,10 @@ function roleFields(body) {
 
 const duplicateRole = (label) => new HttpError(409, `There is already a role called ${label}.`);
 
+const REQUEST_STATUSES = ['pending', 'approved', 'denied'];
+
 function registerAdminRoutes(router, { stores, sessions, passwords, telemetry }) {
-  const { users, roles, audit } = stores;
+  const { users, roles, audit, departures } = stores;
 
   // A role the actor may hand out: it must exist, and they need at least its clearance. So admins can
   // make someone an intern, employee or admin, and only the CEO can make someone CEO.
@@ -141,6 +144,61 @@ function registerAdminRoutes(router, { stores, sessions, passwords, telemetry })
       action: 'read', batch: events.length,
     });
     sendJson(res, 200, { events, nextBefore: events.length === limit ? events.at(-1).id : null });
+  });
+
+  // ---- access requests from people who are leaving ------------------------------------
+  //
+  // The gate in routes/files.js refuses the download and the person asks here. Everything needed
+  // to decide is in the row: which file, at what level, who is asking, and how long they have left.
+
+  router.get('/api/admin/access-requests', async ({ req, res, url }) => {
+    sessions.requireAdmin(req);
+    const status = url.searchParams.get('status');
+    if (status && !REQUEST_STATUSES.includes(status)) {
+      throw new HttpError(400, `Status must be one of: ${REQUEST_STATUSES.join(', ')}.`);
+    }
+    const requests = departures.list({ status: status || null, limit: 200 });
+    sendJson(res, 200, {
+      requests: requests.map(queueView),
+      pending: departures.pendingCount(),
+      leaving: departures.leaving().map((row) => ({
+        id: row.user_id, name: row.name, email: row.email, role: row.role, terminationDate: row.termination_date,
+      })),
+    });
+  });
+
+  router.post('/api/admin/access-requests/:id/decision', async ({ req, res, params: { id }, client }) => {
+    const actor = sessions.requireAdmin(req);
+    const body = await readJson(req);
+    if (body.decision !== 'approve' && body.decision !== 'deny') {
+      throw new HttpError(400, 'Decide either approve or deny.');
+    }
+    const existing = departures.byId(id);
+    if (!existing) throw new HttpError(404, 'Request not found.');
+    if (existing.status !== 'pending') throw new HttpError(409, 'That request has already been decided.');
+    // Releasing a file takes the clearance the file itself needs, exactly as changing who can see it
+    // does: an admin cannot approve their way into a Secret file.
+    if (!outranks(actor, existing.confidentiality)) {
+      throw new HttpError(403, `Only the CEO can release a file at level ${existing.confidentiality}.`);
+    }
+
+    const note = singleLine(body.note ?? '').slice(0, 300);
+    const request = departures.decide(id, { approve: body.decision === 'approve', by: actor, note });
+    if (!request) throw new HttpError(409, 'That request has already been decided.');
+
+    const target = users.findById(request.user_id);
+    audit.record('file.access_request_decided', {
+      actor, target: target || null, ...client,
+      details: {
+        file: request.file_id, request: request.id, decision: request.status,
+        confidentiality: request.confidentiality, expires: request.expires_at,
+      },
+    });
+    telemetry.onPrivilege({
+      actor, tokenHash: req.sessionTokenHash, client, type: 'permission_change', targetRedUserId: request.user_id,
+      systemName: 'departure-access', details: { file: request.file_id, decision: request.status },
+    });
+    sendJson(res, 200, { request: requestView(request) });
   });
 
   // ---- roles --------------------------------------------------------------------------

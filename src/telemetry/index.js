@@ -34,6 +34,9 @@ const sessionRef = (tokenHash) =>
 
 const today = () => new Date().toISOString().slice(0, 10);
 
+// detected_patterns comes back as a real array from PostgreSQL and as JSON text from SQLite.
+const parseJson = (value) => { try { return JSON.parse(value); } catch { return null; } };
+
 // Red's roles, as the peer groups the engine compares people within. A role the CEO adds is named
 // after itself. 'user' is the role everyone but admins had before roles had clearance.
 const ROLE_NAMES = { ceo: 'Red CEO', admin: 'Red admin', employee: 'Red employee', intern: 'Red intern', user: 'Red user' };
@@ -250,6 +253,78 @@ function createTelemetry(db, {
         });
         await events.fileAccess({ userId, deviceId, resourceId, action: 'download', bytes, filesInBatch: items });
       });
+    },
+
+    // Something left the endpoint, as reported by whatever could see it (routes/egress.js). A
+    // paste is a clipboard event, a file leaving is a transfer: both columns already existed, and
+    // both carry the destination so the engine's data-movement variables can finally be filled in
+    // rather than left NULL for want of a DLP proxy.
+    onEgress({ user, tokenHash, client, channel, destination, category, chars, bytes, occurredAt, patterns, sensitivity, fileName }) {
+      return enqueue(async () => {
+        const { userId, deviceId } = await contextFor(user, { tokenHash, client });
+        const level = sensitivity >= 5 ? 'restricted' : sensitivity >= 3 ? 'confidential' : sensitivity ? 'internal' : null;
+        if (channel === 'clipboard' || channel === 'extension') {
+          await events.clipboard({
+            userId, deviceId, occurredAt, charCount: chars,
+            sourceApp: 'red', destinationApp: destination,
+            classification: level, detectedPatterns: patterns,
+          });
+        } else {
+          await events.transfer({
+            userId, deviceId, channel: 'web_upload', occurredAt, bytes: bytes || chars,
+            fileName, destination, sensitivity: level,
+          });
+        }
+        // The category is what makes it shadow AI rather than simply "outside": kept on the
+        // organisation's domain list so the console and the features can read it back.
+        if (destination && category) await subjects.forExternalDomain(destination, category);
+      });
+    },
+
+    // What was reported about one account today, newest first.
+    async egressFor(redUserId, { days = 1 } = {}) {
+      const crimUserId = await subjects.lookupUser(redUserId);
+      if (crimUserId === null) return [];
+      const since = new Date(Date.now() - days * 86400000).toISOString();
+      const { rows } = await db.query(
+        `SELECT occurred_at, char_count AS chars, destination_app AS destination, detected_patterns, content_classification
+         FROM clipboard_events WHERE user_id = ? AND occurred_at >= ? AND destination_app IS NOT NULL
+         ORDER BY occurred_at DESC LIMIT 200`,
+        [crimUserId, since],
+      );
+      return rows.map((row) => ({
+        occurredAt: row.occurred_at, chars: Number(row.chars) || 0, destination: row.destination,
+        patterns: Array.isArray(row.detected_patterns) ? row.detected_patterns : parseJson(row.detected_patterns) || [],
+        classification: row.content_classification,
+      }));
+    },
+
+    // Everyone's reported egress, for the admin feed.
+    async egressFeed({ limit = 200 } = {}) {
+      const org = await subjects.organization();
+      const { rows } = await db.query(
+        `SELECT c.occurred_at, c.char_count AS chars, c.destination_app AS destination, c.detected_patterns,
+                c.content_classification, u.full_name, u.email, u.okta_user_id, d.category
+         FROM clipboard_events c
+         JOIN users u ON u.id = c.user_id
+         LEFT JOIN external_domains d ON d.domain = c.destination_app
+         WHERE u.org_id = ? AND c.destination_app IS NOT NULL
+         ORDER BY c.occurred_at DESC LIMIT ?`,
+        [org, limit],
+      );
+      return rows.map((row) => ({
+        occurredAt: row.occurred_at,
+        chars: Number(row.chars) || 0,
+        destination: row.destination,
+        category: row.category ?? null,
+        classification: row.content_classification,
+        patterns: Array.isArray(row.detected_patterns) ? row.detected_patterns : parseJson(row.detected_patterns) || [],
+        person: {
+          name: row.full_name,
+          email: row.email,
+          redUserId: row.okta_user_id ? Number(String(row.okta_user_id).slice(4)) : null,
+        },
+      }));
     },
 
     // Text someone wrote inside Red, scanned for sensitive terms and secret shapes. Only the
@@ -659,7 +734,8 @@ function createNoop() {
     stats: () => ({ queued: 0, dropped: 0 }),
     coverage: coverageSummary(),
     onLogin: noop, onLoginFailure: noop, onLogout: noop, onStaleSession: noop, onPasswordChanged: noop,
-    onAccess: noop, onExport: noop, onText: noop, onPrivilege: noop, onBandwidth: noop,
+    onAccess: noop, onExport: noop, onText: noop, onPrivilege: noop, onBandwidth: noop, onEgress: noop,
+    egressFor: async () => [], egressFeed: async () => [],
     onRoleChanged: noop, onAccountCreated: noop, onAccountDeleted: noop, onViolation: noop,
     ingest: () => ({ accepted: 0 }),
     runDay: async () => ({ people: 0, snapshots: 0, scored: 0 }),

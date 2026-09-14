@@ -41,7 +41,56 @@ function positive(value, field, max) {
   return n;
 }
 
-function registerTelemetryRoutes(router, { sessions, telemetry, crimguard }) {
+// A leaving date, whichever way it was recorded: the field on the person, or the earliest dated
+// departure event. The amplifier already treats both as a departure (crimguard/risk/amplifier.js),
+// so the gate has to as well, or a resignation notice would raise the score without closing the door.
+const DEPARTURE_EVENTS = ['resignation_notice', 'termination_scheduled', 'termination'];
+
+const isoDate = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+};
+
+// What the login-time address checks found, plus every adjustment sitting on top of the engine's
+// score. Shaped once, because the person and the admin console read the same facts.
+function signalsFor(stores, userId) {
+  const state = stores.risk.state(userId);
+  const base = state ? Number(state.score) : null;
+  return {
+    reputation: stores.signals.reputation(userId),
+    adjustments: stores.signals.adjustments(userId),
+    engineScore: base,
+    effectiveScore: stores.signals.effective(userId, base),
+  };
+}
+
+function registerTelemetryRoutes(router, { stores, sessions, telemetry, crimguard, ai = null }) {
+  // Access is decided in SQL against red.db, so a leaving date is copied there the moment it
+  // changes - the same arrangement as the risk score, and for the same reason (db/departures.js).
+  async function mirrorDeparture(crimUserId) {
+    const [person, events] = await Promise.all([
+      crimguard.query('SELECT okta_user_id, termination_date FROM users WHERE id = ?', [crimUserId]),
+      crimguard.query(
+        `SELECT MIN(effective_date) AS leaving FROM hr_events WHERE user_id = ? AND event_type IN (${DEPARTURE_EVENTS.map(() => '?').join(', ')})`,
+        [crimUserId, ...DEPARTURE_EVENTS],
+      ),
+    ]);
+    const external = person.rows[0]?.okta_user_id;
+    if (!external || !String(external).startsWith('red:')) return;
+    const redUserId = Number(String(external).slice(4));
+    if (!Number.isInteger(redUserId) || redUserId <= 0) return;
+
+    const dates = [isoDate(person.rows[0].termination_date), isoDate(events.rows[0]?.leaving)].filter(Boolean);
+    const terminationDate = dates.length ? dates.sort()[0] : null;
+    try {
+      stores.departures.setState(redUserId, { terminationDate });
+    } catch (err) {
+      // An account deleted between the HR edit and the write-back is not worth raising.
+      if (!/FOREIGN KEY constraint failed/.test(err.message)) throw err;
+    }
+  }
+
   // The collector. Anyone signed in posts their own behaviour here, and only their own: the
   // account comes from the session, never from the body.
   router.post('/api/telemetry', async ({ req, res, client }) => {
@@ -63,7 +112,7 @@ function registerTelemetryRoutes(router, { sessions, telemetry, crimguard }) {
     const report = await telemetry.report.forRedUser(user.id);
     if (!report) {
       // Nothing recorded yet: a brand-new account on its first page view.
-      sendJson(res, 200, { date: null, score: null, features: [], history: [], coverage: telemetry.coverage });
+      sendJson(res, 200, { date: null, score: null, features: [], history: [], coverage: telemetry.coverage, ...signalsFor(stores, user.id) });
       return;
     }
     sendJson(res, 200, {
@@ -82,6 +131,7 @@ function registerTelemetryRoutes(router, { sessions, telemetry, crimguard }) {
       features: report.features,
       history: report.history,
       coverage: telemetry.coverage,
+      ...signalsFor(stores, user.id),
     });
   });
 
@@ -109,6 +159,30 @@ function registerTelemetryRoutes(router, { sessions, telemetry, crimguard }) {
     const report = await telemetry.report.person(id, { date: on ? date(on, 'date') : null });
     if (!report.person) throw new HttpError(404, 'No risk record for that person.');
     sendJson(res, 200, report);
+  });
+
+  // The engine's own numbers, in a sentence. Everything shown on this page was already decided
+  // before this is called: if the model is off, slow or wrong, the page is exactly as it was and
+  // this is the only thing missing.
+  router.get('/api/admin/risk/people/:id/explain', async ({ req, res, params: { id } }) => {
+    requireRisk(req);
+    if (!ai?.enabled()) {
+      return sendJson(res, 200, { available: false, reason: 'Set GROQ_API_KEY to turn on written explanations.' });
+    }
+    const report = await telemetry.report.person(id, {});
+    if (!report.person) throw new HttpError(404, 'No risk record for that person.');
+    const payload = report.score?.dashboard_payload ?? {};
+    const text = await ai.explainScore({
+      score: report.score?.final_score,
+      level: report.score?.risk_level,
+      scenario: report.score?.scenario,
+      hrAmplifier: report.score?.hr_amplifier,
+      contextMultiplier: report.score?.context_multiplier,
+      contributions: payload.contributions ?? [],
+      categories: payload.categories ?? [],
+      days: (report.history ?? []).length,
+    });
+    sendJson(res, 200, { available: Boolean(text), model: ai.model, text });
   });
 
   // Recompute and rescore a day on demand, rather than waiting for the next run.
@@ -155,13 +229,24 @@ function registerTelemetryRoutes(router, { sessions, telemetry, crimguard }) {
     await crimguard.query(`UPDATE users SET ${sets.join(', ')}, updated_at = ? WHERE id = ?`,
       [...values, new Date().toISOString(), id]);
 
-    // A leaving date is itself the HR event the amplifier ramps on.
-    if (terminationDate) {
+    // A leaving date is itself the HR event the amplifier ramps on. That row mirrors the field
+    // rather than standing on its own, so it is replaced when the date moves and withdrawn when
+    // the date is cleared. Leaving it behind would keep a corrected mistake on the record, still
+    // amplifying the score and still holding the gate shut. A resignation notice someone recorded
+    // on its own is a fact in its own right and is not touched.
+    if (terminationDate !== undefined) {
       await crimguard.query(
-        `INSERT INTO hr_events (user_id, event_type, effective_date, recorded_at, source_system) VALUES (?, ?, ?, ?, 'red')`,
-        [id, 'termination_scheduled', terminationDate, new Date().toISOString()],
+        "DELETE FROM hr_events WHERE user_id = ? AND event_type = 'termination_scheduled' AND source_system = 'red'",
+        [id],
       );
+      if (terminationDate) {
+        await crimguard.query(
+          `INSERT INTO hr_events (user_id, event_type, effective_date, recorded_at, source_system) VALUES (?, ?, ?, ?, 'red')`,
+          [id, 'termination_scheduled', terminationDate, new Date().toISOString()],
+        );
+      }
     }
+    await mirrorDeparture(id);
     telemetry.onPrivilege({
       actor: admin, tokenHash: req.sessionTokenHash, client, type: 'permission_change',
       systemName: 'hr-context', details: { subject: Number(id) },
@@ -184,6 +269,7 @@ function registerTelemetryRoutes(router, { sessions, telemetry, crimguard }) {
       `INSERT INTO hr_events (user_id, event_type, effective_date, recorded_at, is_negative, source_system) VALUES (?, ?, ?, ?, ?, 'red')`,
       [id, type, effectiveDate, new Date().toISOString(), isNegative],
     );
+    if (DEPARTURE_EVENTS.includes(type)) await mirrorDeparture(id);
     sendJson(res, 201, { ok: true });
   });
 

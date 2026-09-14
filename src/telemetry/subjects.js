@@ -117,6 +117,28 @@ function createSubjects(db) {
     userIds.delete(redUserId);
   }
 
+  // A destination something was sent to, and the kind of place it is ('genai_llm',
+  // 'personal_cloud', ...). Kept on the organisation's own list so an admin can mark a sanctioned
+  // enterprise tenant as sanctioned, after which it stops counting as shadow AI.
+  const domainIds = new Map();
+  async function forExternalDomain(domain, category, { appName = null } = {}) {
+    const key = String(domain || '').toLowerCase();
+    if (!key) return null;
+    const cached = domainIds.get(key);
+    if (cached !== undefined) return cached;
+
+    const org = await organization();
+    const id = await upsertId({
+      table: 'external_domains',
+      insert: 'INSERT INTO external_domains (org_id, domain, app_name, category) VALUES (?, ?, ?, ?)',
+      params: [org, key, appName, category || 'other'],
+      where: 'org_id = ? AND domain = ?',
+      whereParams: [org, key],
+    });
+    domainIds.set(key, id);
+    return id;
+  }
+
   async function forResource(kind, id, name) {
     const spec = RESOURCE_KINDS[kind];
     if (!spec) return null;
@@ -173,7 +195,7 @@ function createSubjects(db) {
   }
 
   return {
-    organization, workingHours, forUser, lookupUser, forgetUser, forResource, forDevice, isNewDevice,
+    organization, workingHours, forUser, lookupUser, forgetUser, forResource, forExternalDomain, forDevice, isNewDevice,
   };
 }
 

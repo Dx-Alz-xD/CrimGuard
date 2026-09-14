@@ -121,9 +121,15 @@
       location.reload(); // the page asks for a new password as it loads
     } else if (res.status === 403 && data.code === 'not_privileged') {
       go('/dashboard'); // this account's admin role was removed while the page was open
+    } else if (res.status === 403 && data.code === 'mfa_required') {
+      stepUpDialog(data.details || {});
     }
     const error = new Error(data.error || `Something went wrong (${res.status}). Try again.`);
     error.status = res.status;
+    // A refusal the page can act on rather than just report: the departure gate sends back which
+    // file it is holding and whether an ask for it is already in the queue.
+    error.code = data.code;
+    error.details = data.details;
     return error;
   }
 
@@ -267,22 +273,96 @@
 
   // ---- sign in and sign up --------------------------------------------------------
 
+  // The browser's half of the sign-in proof of work. The server hands out a challenge and a
+  // difficulty; this looks for a number whose SHA-256, appended to the challenge, starts with that
+  // many zero bits. A few hundred milliseconds here is nothing to a person and a real cost to
+  // anything grinding through a password list (src/security/proof-of-work.js explains the trade).
+  async function solveChallenge(challenge, difficulty) {
+    const encoder = new TextEncoder();
+    const zeroBytes = difficulty >> 3;
+    const zeroBits = difficulty & 7;
+    for (let n = 0; n < 50_000_000; n += 1) {
+      const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', encoder.encode(`${challenge}:${n}`)));
+      let ok = true;
+      for (let i = 0; i < zeroBytes && ok; i += 1) if (digest[i] !== 0) ok = false;
+      if (ok && zeroBits && (digest[zeroBytes] >> (8 - zeroBits)) !== 0) ok = false;
+      if (ok) return String(n);
+      // Let the page breathe every so often, so a slow device never looks frozen.
+      if (n % 5000 === 4999) await new Promise((resolve) => setTimeout(resolve));
+    }
+    throw new Error('Could not complete the sign-in check. Reload and try again.');
+  }
+
+  async function proofOfWork() {
+    const res = await fetch('/api/auth/challenge');
+    if (!res.ok) return {};
+    const { required, challenge, difficulty } = await res.json();
+    if (!required) return {};
+    return { challenge, solution: await solveChallenge(challenge, difficulty) };
+  }
+
   function initAuthForm(form, endpoint, extra = {}) {
     const error = form.querySelector('.form-error');
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       const button = form.querySelector('button[type="submit"]');
+      const label = button.textContent;
       button.disabled = true;
       error.hidden = true;
       try {
-        const { redirect } = await api('POST', endpoint, { ...Object.fromEntries(new FormData(form)), ...extra });
+        button.textContent = 'Checking…';
+        const proof = await proofOfWork();
+        button.textContent = label;
+        const { redirect } = await api('POST', endpoint, { ...Object.fromEntries(new FormData(form)), ...extra, ...proof });
         go(redirect);
       } catch (err) {
-        error.textContent = err.message;
+        // A stale or spent challenge is what a tab left open hits; the next submit takes a fresh one.
+        error.textContent = err.code === 'challenge_stale' ? 'That took too long. Try again.' : err.message;
         error.hidden = false;
+        button.textContent = label;
         button.disabled = false;
       }
     });
+  }
+
+  // ---- the step-up ----------------------------------------------------------------
+  //
+  // Asked for once a high score has *stayed* high for a couple of minutes of this session, which is
+  // why it turns up mid-session rather than at the sign-in. Until it is answered the session can
+  // reach nothing else, so the dialog cannot be dismissed - only answered, or signed out of.
+
+  let stepUpOpen = null;
+  function stepUpDialog({ lockedOut = false } = {}) {
+    if (stepUpOpen) return stepUpOpen;
+    const code = h('input', {
+      type: 'text', id: uid('step-up-code'), name: 'code', inputmode: 'numeric', autocomplete: 'one-time-code',
+      maxlength: '6', placeholder: '123456', required: true,
+    });
+    const dialog = formDialog({
+      title: lockedOut ? 'This session is locked' : 'Confirm it’s you',
+      note: '',
+      fields: field('Verification code', code, { hint: 'Demo build: the code is 123456.' }),
+      submitLabel: 'Confirm',
+      // There is nothing else this session can do, so there is nothing to cancel back to.
+      required: true,
+      cancelLabel: 'Sign out',
+      onCancel: () => logOut(),
+      onSubmit: async () => {
+        const result = await api('POST', '/api/me/step-up', { code: code.value });
+        stepUpOpen = null;
+        toast(`Confirmed. ${result.discount} points came off your risk score.`);
+        // Whatever the page was showing was drawn before the session was held; start it clean.
+        location.reload();
+      },
+    });
+    stepUpOpen = dialog;
+    dialog.open({
+      note: lockedOut
+        ? 'Too many wrong codes were entered. An admin has to unlock this account.'
+        : 'Your risk score has stayed high since you signed in, so this session needs to confirm who is on it. '
+          + 'Confirming takes some of the score back off.',
+    });
+    return dialog;
   }
 
   // ---- signed-in shell: account menu and your own password ------------------------
@@ -469,6 +549,30 @@
       });
     };
     for (const button of document.querySelectorAll('[data-new-project]')) button.addEventListener('click', openNew);
+
+    // "Add files" from the page header. Files belong to a project, so this asks which one and then
+    // opens it on its Files section - rather than making someone work out that uploading is in
+    // there at all. With nothing to put a file in yet, it offers to make the project first.
+    async function openAddFiles() {
+      if (!projects.length) {
+        toast('Make a project first — files live inside one.');
+        return openNew();
+      }
+      if (projects.length === 1) return drawer.open(projects[0]);
+      const picker = h('select', { id: uid('add-files-project'), name: 'project' },
+        projects.map((project) => h('option', { value: String(project.id) }, project.name)));
+      formDialog({
+        title: 'Add files',
+        note: 'Files live inside a project. Choose the one to put them in.',
+        fields: field('Project', picker),
+        submitLabel: 'Open it',
+        onSubmit: () => {
+          const chosen = projects.find((project) => String(project.id) === picker.value);
+          if (chosen) drawer.open(chosen);
+        },
+      }).open();
+    }
+    for (const button of document.querySelectorAll('[data-add-files]')) button.addEventListener('click', openAddFiles);
 
     const drawer = projectDrawer({
       me,
@@ -747,7 +851,8 @@
       }
 
       if (saved) onFilesChanged();
-      if (!lastError) toast(saved === 1 ? `Uploaded ${queue[0].name}` : `Uploaded ${saved} files`);
+      if (lastError && lastError.code === 'uploads_blocked') toast(lastError.message, 'error');
+      else if (!lastError) toast(saved === 1 ? `Uploaded ${queue[0].name}` : `Uploaded ${saved} files`);
       else if (queue.length === 1) toast(lastError.message, 'error');
       else toast(`Uploaded ${saved} of ${queue.length} files. ${lastError.message}`, 'error');
     }
@@ -1108,8 +1213,38 @@
               class: 'btn btn-secondary btn-sm',
               type: 'button',
               'aria-label': `Download ${file.name}`,
-              onclick: () => download(`/api/files/${file.id}/download`, file.name).catch((err) => toast(err.message, 'error')),
+              onclick: () => open(file),
             }, 'Download'))))))));
+    }
+
+    // Downloading, unless the departure gate is holding this one. A refusal then turns into the
+    // ask, rather than leaving the person at a dead end with no way to say why they need it.
+    async function open(file) {
+      try {
+        await download(`/api/files/${file.id}/download`, file.name);
+      } catch (err) {
+        if (err.code !== 'access_request_required') return toast(err.message, 'error');
+        askFor(file, err.details);
+      }
+    }
+
+    function askFor(file, details) {
+      if (details && details.request) {
+        toast(`Already asked. An admin has to release ${file.name}.`);
+        return;
+      }
+      const reason = h('textarea', { id: uid('reason'), name: 'reason', rows: '3', maxlength: '300', placeholder: 'What do you need it for?' });
+      formDialog({
+        title: 'Ask for this file',
+        fields: field('Reason', reason, { hint: 'An admin sees this next to the request.' }),
+        submitLabel: 'Send request',
+        onSubmit: async () => {
+          await api('POST', `/api/files/${file.id}/access-request`, { reason: reason.value });
+          toast('Sent. An admin will see it in the console.');
+        },
+      }).open({
+        note: `${file.name} is above your clearance and you are close to leaving, so an admin has to release it.`,
+      });
     }
 
     async function load() {
@@ -1507,6 +1642,150 @@
     show();
   }
 
+  // ---- access requests from people who are leaving (admins and the CEO) --------------------
+  //
+  // The gate in the API refuses the download; this is where the ask lands. Everything needed to
+  // judge one is on the row - which file, at what level, who is asking, and how long they have
+  // left - so a decision does not mean opening four other screens first.
+
+  function mountAccessRequests(me) {
+    const surface = $('#access-requests');
+    const leavingSurface = $('#access-leaving');
+    const filterBar = $('#access-filter');
+    const navCount = $('#access-count');
+    let requests = [];
+    let leaving = [];
+    let pending = 0;
+    let status = 'pending';
+    let loaded = false;
+
+    for (const button of filterBar.querySelectorAll('button')) {
+      button.addEventListener('click', () => {
+        status = button.dataset.status;
+        render();
+      });
+    }
+
+    async function load() {
+      try {
+        const data = await api('GET', '/api/admin/access-requests');
+        requests = data.requests;
+        leaving = data.leaving;
+        pending = data.pending;
+        loaded = true;
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+      render();
+    }
+
+    function decide(request, decision) {
+      const approving = decision === 'approve';
+      const note = h('input', { type: 'text', id: uid('note'), name: 'note', maxlength: '300' });
+      formDialog({
+        title: approving ? 'Release this file' : 'Turn this request down',
+        fields: field('Note', note, { hint: 'Kept with the decision. Optional.' }),
+        submitLabel: approving ? 'Release it' : 'Turn it down',
+        onSubmit: async () => {
+          await api('POST', `/api/admin/access-requests/${request.id}/decision`, { decision, note: note.value });
+          toast(approving ? 'Released. It closes again in a week.' : 'Turned down.');
+          await load();
+        },
+      }).open({
+        note: approving
+          ? `${request.person.name} can open ${request.file.name} for a week, then it closes again on its own.`
+          : `${request.person.name} still cannot open ${request.file.name}.`,
+      });
+    }
+
+    const daysText = (days) => (days === null ? 'no date'
+      : days < 0 ? `${plural(Math.abs(days), 'day')} past`
+        : days === 0 ? 'today' : `in ${plural(days, 'day')}`);
+
+    function row(request) {
+      const decided = request.status !== 'pending';
+      // Releasing a file takes the clearance the file itself needs, exactly as sharing it does.
+      const mayDecide = request.file.confidentiality <= me.clearance;
+      return h('tr', {},
+        h('td', {}, h('div', { class: 'shared-file' },
+          h('span', { class: 'file-badge', 'aria-hidden': 'true' }, extensionOf(request.file.name)),
+          h('span', { class: 'shared-name', title: request.file.name }, request.file.name))),
+        h('td', {}, levelMeter(request.file.confidentiality)),
+        h('td', { class: 'wrap' }, h('div', { class: 'person-text' },
+          h('span', {}, request.person.name),
+          h('span', { class: 'person-email' }, request.person.email))),
+        h('td', { class: 'muted' }, daysText(request.person.daysLeft)),
+        h('td', { class: 'wrap muted' }, request.reason || h('span', { class: 'muted' }, 'No reason given')),
+        h('td', { class: 'date' }, h('time', { datetime: parseSqlDate(request.createdAt).toISOString() }, formatDateTime(request.createdAt))),
+        h('td', {}, decided
+          ? h('span', { class: 'muted' }, request.status === 'approved'
+            ? `Released by ${request.decidedBy}`
+            : `Turned down by ${request.decidedBy}`)
+          : h('div', { class: 'row-actions' },
+            h('button', {
+              class: 'btn btn-primary btn-sm',
+              type: 'button',
+              disabled: !mayDecide || null,
+              title: mayDecide ? null : 'Only the CEO can release a file at this level.',
+              onclick: () => decide(request, 'approve'),
+            }, 'Release'),
+            h('button', {
+              class: 'btn btn-secondary btn-sm',
+              type: 'button',
+              disabled: !mayDecide || null,
+              onclick: () => decide(request, 'deny'),
+            }, 'Turn down'))));
+    }
+
+    function render() {
+      for (const button of filterBar.querySelectorAll('button')) {
+        button.setAttribute('aria-pressed', String(button.dataset.status === status));
+        const count = button.querySelector('.count');
+        if (count) count.textContent = pending || '';
+      }
+      navCount.textContent = pending || '';
+      navCount.hidden = !pending;
+
+      if (!loaded) {
+        surface.replaceChildren(h('div', { class: 'surface' }, h('div', { class: 'empty' }, h('p', {}, 'Loading requests…'))));
+        return;
+      }
+      const shown = status ? requests.filter((request) => request.status === status) : requests;
+      if (!shown.length) {
+        surface.replaceChildren(emptyState(
+          status === 'pending' ? 'Nothing waiting' : 'No requests yet',
+          'A request appears here when someone close to leaving reaches for a file that was shared with them by name and is above their clearance.',
+        ));
+      } else {
+        const th = (label, className) => h('th', { scope: 'col', class: className || null }, label);
+        surface.replaceChildren(h('div', { class: 'surface table-wrap' }, h('table', { class: 'table' },
+          h('thead', {}, h('tr', {},
+            th('File'), th('Confidentiality'), th('Who is asking'), th('Leaving'), th('Reason'), th('Asked'),
+            th(h('span', { class: 'sr-only' }, 'Decision')))),
+          h('tbody', {}, shown.map(row)))));
+      }
+
+      if (!leaving.length) {
+        leavingSurface.replaceChildren(emptyState('Nobody is leaving', 'Set a leaving date on someone in the Risk console and they appear here.'));
+        return;
+      }
+      leavingSurface.replaceChildren(h('div', { class: 'surface table-wrap' }, h('table', { class: 'table' },
+        h('thead', {}, h('tr', {},
+          h('th', { scope: 'col' }, 'Person'),
+          h('th', { scope: 'col' }, 'Role'),
+          h('th', { scope: 'col' }, 'Leaving date'))),
+        h('tbody', {}, leaving.map((person) => h('tr', {},
+          h('td', { class: 'wrap' }, h('div', { class: 'person-text' },
+            h('span', {}, person.name),
+            h('span', { class: 'person-email' }, person.email))),
+          h('td', {}, roleLabel(person.role)),
+          h('td', { class: 'date' }, person.terminationDate)))))));
+    }
+
+    render();
+    return { load };
+  }
+
   // ---- page entry points -------------------------------------------------------------
 
   const pages = {
@@ -1526,11 +1805,15 @@
       const rolesSection = mountRoles(me, () => peopleSection.render());
       const peopleSection = mountPeople(me, account, () => rolesSection.load());
       const activitySection = mountActivity();
+      const accessSection = mountAccessRequests(me);
+      // The waiting count is a badge in the nav, so it has to be known before that tab is opened.
+      accessSection.load();
       initSections((name) => {
         if (name === 'people') {
           peopleSection.load();
           rolesSection.load();
         }
+        if (name === 'access') accessSection.load();
         if (name === 'activity') activitySection.load();
       });
     },
