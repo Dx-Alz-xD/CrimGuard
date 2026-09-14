@@ -1,4 +1,5 @@
-# Red has no npm dependencies (it uses Node's built-in SQLite), so there is no install step.
+# Red has no npm dependencies (it uses Node's built-in SQLite and Argon2id), so there is no install step.
+# Node 24.7 or newer is required for crypto.argon2.
 FROM node:24-alpine
 
 RUN apk add --no-cache su-exec
@@ -9,9 +10,10 @@ ENV NODE_ENV=production \
     RED_DB=/data/red.db
 
 WORKDIR /app
-COPY package.json server.js ./
+COPY package.json ./
 COPY src ./src
 COPY public ./public
+COPY database/web ./database/web
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
 # Strip CRLF in case the script was checked out on Windows, where it would otherwise fail to run.
@@ -26,4 +28,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \
   CMD wget -qO /dev/null "http://127.0.0.1:${PORT}/healthz" || exit 1
 
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["node", "server.js"]
+CMD ["node", "src/server.js"]

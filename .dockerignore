@@ -1,6 +1,10 @@
+data
 red.db
 red.db-*
 node_modules
+.env
+.env.*
+*.key
 test
 .git
 .gitignore
@@ -8,3 +12,4 @@ test
 docker-compose.yml
 demo
 scripts
+database/crimguard
