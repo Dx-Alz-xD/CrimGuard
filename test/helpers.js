@@ -355,7 +355,7 @@ test('static paths cannot escape the static folder', async () => {
 test('in production, the first admin is never created with the default password', () => {
   const dbFile = path.join(os.tmpdir(), `red-test-${process.pid}-${Date.now()}.db`);
   try {
-    const result = spawnSync(process.execPath, [path.join(__dirname, '..', 'server.js')], {
+    const result = spawnSync(process.execPath, [path.join(__dirname, '..', 'src', 'server.js')], {
       env: { ...process.env, NODE_ENV: 'production', RED_DB: dbFile, RED_ADMIN_PASSWORD: '', HOST: '127.0.0.1', PORT: '0' },
       encoding: 'utf8',
       timeout: 15_000,

@@ -3,7 +3,7 @@
 const http = require('node:http');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const auth = require('./auth');
+const auth = require('./security/passwords');
 const { ROLES, STATUSES } = require('./db');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');

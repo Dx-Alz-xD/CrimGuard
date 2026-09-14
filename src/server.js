@@ -1,8 +1,9 @@
 'use strict';
 
 const path = require('node:path');
-const { openDb, hasAdmin, ensureAdmin } = require('./src/db');
-const { createApp } = require('./src/app');
+const { openDb, hasAdmin, ensureAdmin } = require('./db');
+const { connectCrimGuard, describeConnection } = require('./db/crimguard');
+const { createApp } = require('./app');
 
 const isProduction = process.env.NODE_ENV === 'production';
 const PORT = Number(process.env.PORT) || 3000;
@@ -16,7 +17,7 @@ function fail(message) {
 }
 
 async function main() {
-  const db = openDb(process.env.RED_DB || path.join(__dirname, 'red.db'));
+  const db = openDb(process.env.RED_DB || path.join(__dirname, '..', 'red.db'));
 
   if (!hasAdmin(db)) {
     const password = process.env.RED_ADMIN_PASSWORD;
@@ -34,6 +35,14 @@ async function main() {
     console.log(`Created admin account ${admin.email}${password ? '' : ` with the default password "${DEFAULT_ADMIN_PASSWORD}"`}`);
   }
 
+  // PostgreSQL when CRIMGUARD_DATABASE_URL is set and reachable, otherwise the SQLite copy.
+  // Red's accounts and projects stay in red.db either way, so a failure here doesn't stop the app.
+  const crimguard = await connectCrimGuard().catch((err) => {
+    console.error(`CrimGuard risk database unavailable: ${err.message}`);
+    return null;
+  });
+  if (crimguard) console.log(`CrimGuard risk database: ${describeConnection(crimguard)}`);
+
   const server = createApp({ db, secureCookies: process.env.RED_SECURE_COOKIES === '1' });
   server.listen(PORT, HOST, () => {
     console.log(`Red is running at http://localhost:${server.address().port}`);
@@ -42,8 +51,9 @@ async function main() {
   // Platforms send SIGTERM before replacing a container: finish in-flight requests, then close the database.
   const shutdown = (signal) => {
     console.log(`${signal} received, shutting down`);
-    server.close(() => {
+    server.close(async () => {
       db.close();
+      await crimguard?.close();
       process.exit(0);
     });
     server.closeIdleConnections();

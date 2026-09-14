@@ -1,7 +1,7 @@
 'use strict';
 
 const { DatabaseSync } = require('node:sqlite');
-const { hashPassword } = require('./auth');
+const { hashPassword } = require('../security/passwords');
 
 const ROLES = ['user', 'admin'];
 const STATUSES = ['planning', 'active', 'done'];
