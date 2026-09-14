@@ -7,6 +7,8 @@ const { createIdentity } = require('../src/identity/identity');
 const { connectCrimGuard } = require('../src/db/crimguard');
 const { createTelemetry } = require('../src/telemetry');
 const { createSubjects } = require('../src/telemetry/subjects');
+const { createStores } = require('../src/db');
+const { MFA } = require('../src/security/risk-signals');
 const { startApp, PASSWORD, ADMIN } = require('./helpers');
 
 const quiet = () => {};
@@ -107,6 +109,39 @@ test('a score over the step-up policy holds every session of the account until t
   await score(user, 76);
   assert.equal((await actionsOf(crimId)).length, 1, 'the same policy does not fire again the same day');
   assert.equal((await b('GET', '/api/projects')).status, 200);
+});
+
+test('with both step-ups open, each can still be answered, and the session carries on once both are', async (t) => {
+  // A score of 87 crosses the identity policy (70, password) and, once it has stayed that high for
+  // the dwell, the OTP step-up (85). Each gate used to leave only its own answer open, so each
+  // refused the other's, and the only thing left to do was sign out.
+  const { app, score } = await withIdentity(t);
+  const stores = createStores(app.db);
+  const { b, user } = await app.signUp('Bea Both');
+  await score(user, 87);
+  stores.risk.setState(user.id, { score: 87, level: 'critical', scenario: null, scoredOn: today() });
+  app.db.prepare('UPDATE sessions SET created_at = created_at - ? WHERE user_id = ?').run(MFA.dwellMs + 1000, user.id);
+
+  assert.equal((await b('GET', '/api/projects')).status, 403);
+
+  const otp = await b('POST', '/api/me/step-up', { code: '123456' });
+  assert.equal(otp.status, 200, JSON.stringify(otp.body));
+  assert.equal((await b('GET', '/api/projects')).body.code, 'step_up_required', 'the password step-up is still owed');
+
+  const password = await b('POST', '/api/identity/step-up', { password: PASSWORD });
+  assert.equal(password.status, 200, JSON.stringify(password.body));
+  assert.equal((await b('GET', '/api/projects')).status, 200);
+});
+
+test('evidence keeps arriving while an OTP step-up is open', async (t) => {
+  const { app } = await withIdentity(t);
+  const stores = createStores(app.db);
+  const { b, user } = await app.signUp('Tess Telemetry');
+  stores.risk.setState(user.id, { score: 88, level: 'critical', scenario: null, scoredOn: today() });
+  app.db.prepare('UPDATE sessions SET created_at = created_at - ? WHERE user_id = ?').run(MFA.dwellMs + 1000, user.id);
+
+  assert.equal((await b('GET', '/api/projects')).body.code, 'mfa_required');
+  assert.equal((await b('POST', '/api/telemetry', { events: [] })).status, 202, 'the collector is not silenced by an unanswered dialog');
 });
 
 test('a score too high freezes the account, and an admin restores it', async (t) => {

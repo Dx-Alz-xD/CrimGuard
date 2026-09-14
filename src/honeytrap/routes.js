@@ -12,11 +12,9 @@
 //   GET  /api/admin/honeytrap/people/:id  a person's plantings and trips (admins)
 //   POST /api/admin/honeytrap/run         apply the policy to everyone now (admins)
 
-const { HttpError } = require('../http/errors');
+const { HttpError, sessionEnded, riskDatabaseMissing } = require('../http/errors');
 const { readJson } = require('../http/request');
 const { sendJson } = require('../http/response');
-
-const ENDED = 'Your session has ended. Please sign in again.';
 
 // Paths a leaked key would plausibly be tried against. They all answer like a real API that
 // doesn't recognise the key.
@@ -57,7 +55,7 @@ function registerHoneytrapRoutes(router, { sessions, crimguard, honeytrap }) {
     const user = sessions.requireUser(req);
     const opened = await honeytrap.openFile({ user, fileId: id, client });
     if (!opened) throw new HttpError(404, 'File not found.');
-    if (opened.tripped) throw new HttpError(401, ENDED);
+    if (opened.tripped) throw sessionEnded();
     sendJson(res, 200, { file: opened.file });
   });
 
@@ -65,7 +63,7 @@ function registerHoneytrapRoutes(router, { sessions, crimguard, honeytrap }) {
     const user = sessions.requireUser(req);
     const body = await readJson(req);
     const reports = await honeytrap.sighting({ user, action: body.action, fingerprints: body.fingerprints, client });
-    if (signedOutBy(reports, user)) throw new HttpError(401, ENDED);
+    if (signedOutBy(reports, user)) throw sessionEnded();
     sendJson(res, 202, { ok: true });
   });
 
@@ -79,13 +77,13 @@ function registerHoneytrapRoutes(router, { sessions, crimguard, honeytrap }) {
 
   router.get('/api/admin/honeytrap/people/:id', async ({ req, res, params: { id } }) => {
     sessions.requireAdmin(req);
-    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    if (!crimguard) throw riskDatabaseMissing();
     sendJson(res, 200, await honeytrap.report(id));
   });
 
   router.post('/api/admin/honeytrap/run', async ({ req, res }) => {
     sessions.requireAdmin(req);
-    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    if (!crimguard) throw riskDatabaseMissing();
     const { results, ...summary } = await honeytrap.evaluateAll();
     sendJson(res, 200, { ...summary, results });
   });

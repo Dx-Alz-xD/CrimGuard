@@ -5,7 +5,7 @@ const { HttpError } = require('../http/errors');
 const { readJson, readBinary } = require('../http/request');
 const { sendJson, noContent } = require('../http/response');
 const { CONFIDENTIALITY, MIN_LEVEL, MAX_LEVEL, canManageFileAccess, isLevel, isPrivileged, outranks } = require('../security/access');
-const { isDecoyId } = require('../telemetry/honeytokens');
+const { createDecoyTrap } = require('./decoys');
 const { requestView } = require('../db/departures');
 const { uploadBlocked, UPLOAD_BLOCK_SCORE } = require('../security/risk-signals');
 const { singleLine } = require('../validation');
@@ -123,28 +123,9 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
     return project;
   }
 
-  // Decoy projects (telemetry/honeytokens.js) sit in a risky account's project list. Opening one must
-  // look like opening an empty project. Changing one is the trip, handled exactly as routes/projects.js
-  // does: record it, revoke every session the account has, and answer as a signed-out request.
-  // trip() returns null unless a live decoy with this id was planted for this very account; the request
-  // then carries on and gets the ordinary "not found".
-  async function springTrap({ req, user, id, client }) {
-    const report = await telemetry.honeytokens.trip({
-      user, decoyId: id, interaction: 'modified', client, tokenHash: req.sessionTokenHash,
-    });
-    if (!report) return;
-
-    stores.sessions.removeAll(user.id);
-    stores.audit.record('security.honeytoken_tripped', {
-      actor: user, target: user, ...client, details: { interaction: 'modified', decoy: report.decoy, score: report.score },
-    });
-    // The identity throttle turns it into a freeze: signing back in waits for an admin.
-    await protection?.onHoneytokenTrip(report);
-    throw new HttpError(401, 'Your session has ended. Please sign in again.');
-  }
-
-  const isPlantedDecoy = async (user, id) =>
-    isDecoyId(id) && (await telemetry.honeytokens.listFor(user.id)).some((decoy) => decoy.id === id);
+  // A decoy project's files: listing them looks like an empty project, changing them is the trip
+  // (routes/decoys.js).
+  const decoys = createDecoyTrap({ stores, telemetry, protection });
 
   // File actions are reported the way project actions are: against the project, the kind of object the
   // risk database models, with the file action and its size. Without a CrimGuard database this does nothing.
@@ -155,7 +136,7 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
 
   router.get('/api/projects/:id/files', async ({ req, res, params, client }) => {
     const user = sessions.requireUser(req);
-    if (await isPlantedDecoy(user, params.id)) {
+    if (await decoys.isPlanted(user, params.id)) {
       sendJson(res, 200, { files: [], maxFileBytes });
       return;
     }
@@ -167,7 +148,7 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
 
   router.post('/api/projects/:id/files', async ({ req, res, params, client }) => {
     const user = sessions.requireUser(req);
-    if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, client });
+    await decoys.spring({ req, user, id: params.id, client });
     const project = ownProject(user, params.id);
     // Both checked before reading the body, so a refusal doesn't cost a full upload first.
     assertMayUpload(user);
@@ -188,7 +169,7 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
 
   router.get('/api/projects/:id/files/:fileId/download', async ({ req, res, params, client }) => {
     const user = sessions.requireUser(req);
-    if (isDecoyId(params.id)) throw fileNotFound(); // a decoy has no files, matching its empty list
+    if (decoys.isDecoyId(params.id)) throw fileNotFound(); // a decoy has no files, matching its empty list
     const project = ownProject(user, params.id);
     const file = files.content(params.fileId, project.id);
     if (!file) throw fileNotFound();
@@ -199,7 +180,7 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
 
   router.patch('/api/projects/:id/files/:fileId', async ({ req, res, params, client }) => {
     const user = sessions.requireUser(req);
-    if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, client });
+    await decoys.spring({ req, user, id: params.id, client });
     const project = ownProject(user, params.id);
     const existing = files.get(params.fileId, project.id);
     if (!existing) throw fileNotFound();
@@ -220,7 +201,7 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
 
   router.put('/api/projects/:id/files/:fileId/content', async ({ req, res, params, client }) => {
     const user = sessions.requireUser(req);
-    if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, client });
+    await decoys.spring({ req, user, id: params.id, client });
     const project = ownProject(user, params.id);
     // Replacing a file's contents is putting new material in, so it meets the same rule.
     assertMayUpload(user);
@@ -235,7 +216,7 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
 
   router.delete('/api/projects/:id/files/:fileId', async ({ req, res, params, client }) => {
     const user = sessions.requireUser(req);
-    if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, client });
+    await decoys.spring({ req, user, id: params.id, client });
     const project = ownProject(user, params.id);
     if (!files.remove(params.fileId, project.id)) throw fileNotFound();
     reportAccess({ req, client, user, project }, 'delete');

@@ -83,6 +83,7 @@ async function main() {
     pepper: config.pepper,
     secureCookies: config.secureCookies,
     trustProxy: config.trustProxy,
+    publicOrigin: config.publicOrigin,
     maxFileBytes: config.maxFileBytes,
   });
   server.listen(config.port, config.host, () => {

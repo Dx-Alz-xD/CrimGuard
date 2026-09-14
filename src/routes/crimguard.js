@@ -9,12 +9,11 @@
 // the page open doesn't flood the activity log. Files above the viewer's clearance are counted, never
 // named.
 
-const { HttpError } = require('../http/errors');
+const { HttpError, riskDatabaseMissing } = require('../http/errors');
 const { readJson } = require('../http/request');
 const { sendJson } = require('../http/response');
 const { isCeo, isPrivileged } = require('../security/access');
-const { singleLine } = require('../validation');
-const { isoDate } = require('./telemetry');
+const { dateField, singleLine } = require('../validation');
 
 const RECORD_VIEW_EVERY_MS = 10 * 60 * 1000;
 const RISK_CACHE_MS = 30 * 1000;
@@ -176,7 +175,7 @@ function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguar
   // of the record itself: it would ride along on every poll for something opened now and then.
   router.get('/api/crimguard/people/:id/variables', async ({ req, res, params: { id } }) => {
     sessions.requireAdmin(req);
-    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    if (!crimguard) throw riskDatabaseMissing();
     if (!people.person(id)) throw new HttpError(404, 'There is no account with that id.');
 
     const report = await telemetry.report.forRedUser(id);
@@ -209,7 +208,7 @@ function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguar
         return n;
       }
       case 'date':
-        return isoDate(raw, meta.feature_key);
+        return dateField(raw, meta.feature_key);
       case 'category':
         if (typeof raw !== 'string' || raw.length > 40) throw new HttpError(400, `${meta.feature_key} must be a short word.`);
         return raw;
@@ -223,14 +222,14 @@ function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguar
 
   router.put('/api/crimguard/people/:id/override', async ({ req, res, params: { id }, client }) => {
     const admin = sessions.requireAdmin(req);
-    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    if (!crimguard) throw riskDatabaseMissing();
     const body = await readJson(req);
 
     // The id here is a Red account, the same as everywhere else in the admin console.
     const person = people.person(id);
     if (!person) throw new HttpError(404, 'There is no account with that id.');
 
-    const on = body.date ? isoDate(body.date, 'date') : new Date().toISOString().slice(0, 10);
+    const on = body.date ? dateField(body.date, 'date') : new Date().toISOString().slice(0, 10);
 
     let score = null;
     if (body.score !== undefined && body.score !== null && body.score !== '') {

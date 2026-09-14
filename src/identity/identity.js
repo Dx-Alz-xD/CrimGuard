@@ -16,11 +16,11 @@
 // an admin approves it. State is read back from identity_actions, so it survives a restart and is
 // the same in every process that shares the database (after CACHE_MS at most).
 
-const { createSubjects } = require('../telemetry/subjects');
 const { createEvents } = require('../telemetry/events');
 const { sessionRef } = require('../telemetry');
 const { DEFAULT_POLICIES, LOCKING, policyFor, standing } = require('./policy');
-const { latestScore, redIdOf } = require('./scores');
+const { latestScore } = require('./scores');
+const { createSubjects, redIdOf } = require('../telemetry/subjects');
 
 const CACHE_MS = 15_000;
 const MAX_STEP_UP_FAILURES = 3;

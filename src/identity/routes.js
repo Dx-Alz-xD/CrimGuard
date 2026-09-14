@@ -10,28 +10,14 @@
 //   POST  /api/admin/identity/actions/:id/decline
 //   POST  /api/admin/identity/people/:id/restore          { note } - lift a freeze
 
-const { HttpError } = require('../http/errors');
+const { HttpError, sessionEnded, riskDatabaseMissing } = require('../http/errors');
 const { readJson } = require('../http/request');
 const { sendJson } = require('../http/response');
-
-const ENDED = 'Your session has ended. Please sign in again.';
-
-// While a step-up is open, only these API paths still work: the ones that let the person confirm
-// who they are, sign out, or keep sending evidence.
-const OPEN_DURING_STEP_UP = [
-  /^\/api\/identity\//,
-  /^\/api\/biometrics\/windows$/,
-  /^\/api\/logout$/,
-  /^\/api\/me$/,
-  /^\/api\/telemetry$/,
-  /^\/api\/files\/shared\/integrity$/,
-];
-const openDuringStepUp = (pathname) => OPEN_DURING_STEP_UP.some((pattern) => pattern.test(pathname));
 
 function registerIdentityRoutes(router, { sessions, stores, passwords, throttle, limits, crimguard, identity }) {
   function requireRisk(req) {
     const admin = sessions.requireAdmin(req);
-    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    if (!crimguard) throw riskDatabaseMissing();
     return admin;
   }
 
@@ -59,7 +45,7 @@ function registerIdentityRoutes(router, { sessions, stores, passwords, throttle,
     if (!passed) throttle.fail(key, limits.passwordCheckPerUser);
 
     const outcome = await identity.stepUp({ user, tokenHash: req.sessionTokenHash, client, passed });
-    if (outcome.status === 'frozen') throw new HttpError(401, ENDED);
+    if (outcome.status === 'frozen') throw sessionEnded();
     if (!passed) {
       throw Object.assign(new HttpError(400, 'That password is incorrect.'), { code: 'step_up_failed' });
     }
@@ -127,4 +113,4 @@ function registerIdentityRoutes(router, { sessions, stores, passwords, throttle,
   });
 }
 
-module.exports = { registerIdentityRoutes, openDuringStepUp, OPEN_DURING_STEP_UP };
+module.exports = { registerIdentityRoutes };

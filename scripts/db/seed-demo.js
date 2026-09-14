@@ -24,6 +24,7 @@ const { createSubjects } = require('../../src/telemetry/subjects');
 const { createEvents } = require('../../src/telemetry/events');
 const { createTelemetry } = require('../../src/telemetry');
 const { assess } = require('../../src/security/genai');
+const { ignoreDeletedAccount } = require('../../src/db/errors');
 
 const PASSWORD = 'demo-password-2026';
 const DOMAIN = 'red.local';
@@ -162,6 +163,8 @@ async function main() {
   }
 
   const config = loadConfig();
+  // Two of the cast are admins, and every account shares a password printed below.
+  if (config.isProduction) throw new Error('Refusing to seed demo accounts into a production database (NODE_ENV=production).');
   const red = openDb(config.dbFile);
   const stores = createStores(red);
   const passwords = createPasswordHasher({ pepper: config.pepper });
@@ -175,7 +178,14 @@ async function main() {
   console.log(`CrimGuard risk database: ${describeConnection(db)}`);
   const subjects = createSubjects(db);
   const events = createEvents(db);
-  const telemetry = createTelemetry(db);
+  // Today's score is copied into red.db as it lands, exactly as the server does (src/services.js),
+  // so risk limiting and the step-up see the seeded company straight away rather than after the
+  // server's first scoring run.
+  const telemetry = createTelemetry(db, {
+    onScored: async ({ redUserId, score, level, scenario, date }) => {
+      if (redUserId) ignoreDeletedAccount(() => stores.risk.setState(redUserId, { score, level, scenario, scoredOn: date }));
+    },
+  });
 
   const cast = PEOPLE.slice(0, args.people);
   const passwordHash = await passwords.hash(PASSWORD);

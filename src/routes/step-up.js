@@ -18,38 +18,16 @@ const { HttpError } = require('../http/errors');
 const { readJson } = require('../http/request');
 const { sendJson } = require('../http/response');
 const { MFA, otpValid } = require('../security/risk-signals');
-
-// Reachable while a step-up is open, or there would be no way to answer it or to leave.
-const OPEN_DURING_STEP_UP = [
-  /^\/api\/me\/step-up$/,
-  /^\/api\/logout$/,
-  /^\/api\/me$/,
-];
-const openDuringStepUp = (pathname) => OPEN_DURING_STEP_UP.some((pattern) => pattern.test(pathname));
-
-// What the guard and the routes both need: this session's standing.
-function standingFor({ stores, user, tokenHash, startedAt, now = Date.now() }) {
-  const state = stores.risk.state(user.id);
-  if (!state) return { required: false, passed: false };
-  const score = stores.signals.effective(user.id, Number(state.score));
-  return {
-    ...stores.signals.demand({
-      userId: user.id,
-      tokenHash,
-      score,
-      sessionAgeMs: Math.max(0, now - Number(startedAt || now)),
-      now,
-    }),
-    score,
-  };
-}
+// The gate that holds a session until this is answered, and the paths it leaves open, are in
+// security/session-gate.js alongside the identity throttle's password step-up.
+const { otpStanding } = require('../security/session-gate');
 
 function registerStepUpRoutes(router, { stores, sessions, telemetry, now = Date.now }) {
   const { signals, audit } = stores;
 
   router.get('/api/me/step-up', async ({ req, res }) => {
     const user = sessions.requireUser(req, { allowPasswordChange: true });
-    const standing = standingFor({ stores, user, tokenHash: req.sessionTokenHash, startedAt: req.sessionStartedAt, now: now() });
+    const standing = otpStanding({ stores, user, tokenHash: req.sessionTokenHash, startedAt: req.sessionStartedAt, now: now() });
     sendJson(res, 200, {
       required: standing.required,
       passed: standing.passed,
@@ -64,7 +42,7 @@ function registerStepUpRoutes(router, { stores, sessions, telemetry, now = Date.
     const user = sessions.requireUser(req, { allowPasswordChange: true });
     const tokenHash = req.sessionTokenHash;
     // Re-read rather than trust the caller: the demand has to exist before a code can answer it.
-    standingFor({ stores, user, tokenHash, startedAt: req.sessionStartedAt, now: now() });
+    otpStanding({ stores, user, tokenHash, startedAt: req.sessionStartedAt, now: now() });
 
     const body = await readJson(req);
     const code = typeof body.code === 'string' ? body.code : '';
@@ -109,4 +87,4 @@ function registerStepUpRoutes(router, { stores, sessions, telemetry, now = Date.
   });
 }
 
-module.exports = { registerStepUpRoutes, standingFor, openDuringStepUp };
+module.exports = { registerStepUpRoutes };

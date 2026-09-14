@@ -66,9 +66,9 @@ function registerEgressRoutes(router, { stores, sessions, telemetry, crimguard, 
     if (user) return { user, self: true };
     if (!agentAuthorised(req)) throw new HttpError(401, 'Sign in, or present an agent key.');
     const email = String(body.email || '').trim().toLowerCase();
-    const found = email ? stores.users.findByEmail?.(email) ?? stores.users.findForLogin(email) : null;
+    const found = email ? stores.users.findByEmail(email) : null;
     if (!found) throw new HttpError(404, 'No account with that address.');
-    return { user: { id: found.id, name: found.name, email: found.email, role: found.role }, self: false };
+    return { user: found, self: false };
   }
 
   // One observation, cleaned. `document` names a file in Red when the reporter could tell - which

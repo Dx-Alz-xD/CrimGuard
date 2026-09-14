@@ -174,17 +174,20 @@ accounts and projects.
 | `RED_CEO_PASSWORD`         | none (required in prod) | The CEO's password, at least 12 characters. |
 | `RED_CEO_NAME`             | `Red CEO`               | |
 | `RED_TRUST_PROXY`          | off                     | Set to `1` behind exactly one reverse proxy, so rate limits and the activity log use the client address from `X-Forwarded-For`. Leave off otherwise, or clients could spoof it. |
+| `RED_PUBLIC_ORIGIN`        | none                    | Where the site is published, e.g. `https://red.example.com`, for the absolute URLs in `sitemap.xml` and `llms.txt`. Without it they are written against the request's own host, after checking it looks like one, and are not cached publicly. |
 | `RED_MAX_FILE_MB`    | `10`                     | Largest file someone can upload to a project, in megabytes (up to 100). |
 | `RED_SECURE_COOKIES`       | off                     | Set to `1` to always mark cookies Secure. Behind an HTTPS proxy Red detects this on its own. |
 | `PORT`                     | `3000`                  | Most platforms set this for you. |
 | `HOST`                     | `0.0.0.0` in the image  | `127.0.0.1` when run with `npm start` outside production. |
 | `RED_DB`                   | `/data/red.db` in image | Path to the SQLite file. `data/red.db` locally. |
-| `CRIMGUARD_DATABASE_URL`   | none                    | PostgreSQL for the risk database. Without it, the SQLite copy at `database/crimguard.db` is used. |
+| `CRIMGUARD_DATABASE_URL`   | none                    | PostgreSQL for the risk database. Without it, a SQLite copy is used, seeded from `database/crimguard.db`. |
 | `CRIMGUARD_DB`             | `auto`                  | `postgres` to refuse the SQLite fallback, `sqlite` to skip PostgreSQL entirely. |
-| `CRIMGUARD_SQLITE_PATH`    | `database/crimguard.db` | Where the SQLite copy of the risk database lives. |
+| `CRIMGUARD_SQLITE_PATH`    | `data/crimguard.db`     | Where the SQLite copy of the risk database lives. Never the tracked `database/crimguard.db`: a running server writes to it. |
 | `RED_HONEYTOKEN_SCORE`     | `40`                    | Risk score at which a decoy project is planted for an account. |
 | `RED_MAILCHECK_KEY`        | none                    | RapidAPI key for mailcheck, which answers whether an address's domain is disposable, forwarded, blocklisted or undeliverable. Without it that half of the check never runs; the breach check needs no key. |
 | `RED_EMAIL_CHECKS`         | on                      | Set to `0` to send no address anywhere: neither the breach check nor the domain check runs. |
+| `RED_EGRESS_KEY`           | none                    | Key an endpoint agent, managed extension or DLP proxy sends as `X-Red-Agent-Key` to report egress for any account. Without it only signed-in sessions can report, and only about themselves. |
+| `GROQ_API_KEY`             | none                    | Turns on written score explanations and egress triage. The model is sent catalogue keys and numbers only, never names, files or content (`src/security/ai-analyst.js`). `GROQ_MODEL` picks the model. |
 | `RED_ALLOW_DEMO_OTP`       | off                     | The step-up still accepts the fixed demo code `123456`. Production refuses to start unless this is `1`, so a build with a guessable second factor cannot ship by accident. |
 
 The admin and CEO variables only matter until someone holds that role. After that,
@@ -471,6 +474,19 @@ The default is the deck's Case B: four quiet months, then a creep from ~15 to ~7
 with nothing on file to explain it. No single day looks wrong, and a 3-sigma rule never fires;
 the drift detector reports it as `slow_exfiltration` about seven weeks in.
 
+For a whole company rather than one account:
+
+```bash
+npm run db:seed-demo                      # 26 people, 210 days (about seven minutes)
+npm run db:seed-demo -- --people 12 --days 60   # a quicker run
+npm run db:seed-demo -- --reset           # remove the seeded @red.local accounts first
+```
+
+Six behavioural shapes - quiet, busy with a ticket to explain it, slow creep, one loud day,
+leaving, shadow-AI user - and the real engine left to score them. It writes to `data/`, never to
+the tracked seed, and refuses to run with `NODE_ENV=production`: two of the cast are admins and
+every account shares the password it prints.
+
 ---
 
 ## Layout
@@ -478,18 +494,31 @@ the drift detector reports it as `slow_exfiltration` about seven weeks in.
 ```
 src/
   server.js              startup: config checks, migrations, first admin and CEO, graceful shutdown
-  app.js                 HTTP server: security headers, CSRF checks, routing, housekeeping
+  app.js                 HTTP server: routing, same-origin checks, errors into responses
+  services.js            builds what a request can reach - stores, sessions, telemetry, protection -
+                         and the hooks between them
+  jobs.js                what runs on a timer: housekeeping, and scoring every quarter hour
   config.js              environment variables, session lifetimes, rate limits
   validation.js          input cleaning and validation shared by the routes
-  routes/                auth.js (sign-up, login, password), profile.js, projects.js,
-                         files.js (files, sharing, access), admin.js (people, roles, activity),
-                         crimguard.js (the dashboard's data), pages.js (HTML, static, health)
+  routes/                index.js (every route, registered in one place), auth.js, profile.js,
+                         projects.js, files.js (files, sharing, access), admin.js (people, roles,
+                         activity), crimguard.js (the dashboard's data), telemetry.js (collector,
+                         risk console, HR context), step-up.js (the OTP step-up), egress.js
+                         (shadow AI), decoys.js (decoy projects),
+                         pages.js (HTML, static, health), crawl.js (robots, sitemap, llms.txt)
   security/              access.js (roles, clearance, who may change access),
-                         departure.js (the notice window, and what it holds back),
+                         session-gate.js (freeze and both step-ups, and what stays open during them),
+                         departure.js, risk-signals.js, genai.js, ai-analyst.js,
+                         email-reputation.js, proof-of-work.js, limits.js, provisioning.js,
                          passwords.js (pepper + Argon2id), password-policy.js, sessions.js,
                          throttle.js, tokens.js, headers.js
-  http/                  router, request parsing, responses, cookies, errors
-  db/                    index.js (open, pragmas), migrate.js, and one query module per area:
+  protection/            wires the three below into the app at one seam
+  identity/              the identity throttle: response policies, step-up and freeze
+  biometrics/            typing and pointer dynamics against each owner's profile
+  honeytrap/             decoy files, canaries and trap endpoints
+  http/                  router, request parsing, responses, cookies, errors, origin.js (Host and
+                         Origin, believed only as far as they must be)
+  db/                    index.js (open, pragmas), migrate.js, errors.js, and one query module per area:
                          users.js, sessions.js, projects.js, files.js (and who can see
                          a file), roles.js, people.js (the dashboard), risk.js,
                          departures.js (leaving dates and access requests), audit.js
@@ -500,14 +529,13 @@ database/
   web/migrations/        SQLite schema for the website, applied on start
   crimguard/             PostgreSQL schema for the CrimGuard detection platform
 crimguard/risk/          the scoring formula (see its own README)
-public/                  pages and static/: app.js, crimguard.js (the dashboard),
-                         telemetry.js (the collector), risk-panel.js, risk-console.js,
-                         styles.css, icons
-test/                    node --test suites: auth, passwords, profile, projects, files, admin,
-                         roles, access, crimguard,
-                         security, migrations, telemetry, client-scripts
+public/                  pages, 404.html, and static/: app.js, crimguard.js (the dashboard),
+                         telemetry.js (the collector),
+                         risk-panel.js, risk-console.js, identity-console.js, step-up.js,
+                         biometrics.js, shared-files.js, styles.css, icons
+test/                    node --test suites, one per area, plus crimguard/ for the risk engine
 scripts/demo/            build.js and demo-api.js, which make the static demo
-scripts/db/              status.js, build-sqlite.js, seed-risk.js
+scripts/db/              status.js, build-sqlite.js, seed-risk.js, seed-demo.js
 demo/                    the generated static demo (npm run build:demo)
 data/                    local database and development pepper (git-ignored)
 Dockerfile               production image, runs as non-root, health check
@@ -560,7 +588,10 @@ docker-compose.yml       one-command self-hosting with a data volume
 | `POST /api/admin/risk/people/:id/hr-events` | admin, records a review, action or notice |
 | `POST/DELETE /api/admin/risk/people/:id/leave` | admin, leave periods |
 | `GET /healthz`                         | anyone |
+| `GET /robots.txt`, `/sitemap.xml`, `/llms.txt` | anyone; public pages only |
 
 Errors are `{ "error": "message" }`, plus a `code` for `password_change_required` (403),
-`not_privileged` (403, the account no longer has the admin console) and `rate_limited`
-(429, with `Retry-After`).
+`not_privileged` (403, the account no longer has the admin console), `rate_limited`
+(429, with `Retry-After`), and `step_up_required` / `mfa_required` (403, the session must confirm
+who is on it - by password or by code - before anything but the step-up itself; both can be owed
+at once, and each stays answerable while the other is).

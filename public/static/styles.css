@@ -353,6 +353,7 @@ select {
 .site-header,
 .hero,
 .matrix-inner,
+.breadcrumbs-bar,
 .site-footer {
   max-width: 1240px;
   margin-inline: auto;
@@ -961,6 +962,26 @@ select {
 }
 .notfound h1 { font-size: 34px; font-weight: 700; font-stretch: 112%; letter-spacing: -0.02em; }
 .notfound p { color: var(--slate); }
+
+/* The 404 page proper: a readable column, with somewhere to go next. */
+.notfound-page { max-width: 760px; }
+.notfound-code { font-size: 64px; font-weight: 800; font-stretch: 125%; line-height: 1; color: var(--line-strong); }
+.notfound-page h1 { font-size: 34px; font-weight: 700; font-stretch: 112%; letter-spacing: -0.02em; }
+.notfound-lead { max-width: 60ch; color: var(--slate); }
+.notfound-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.notfound-links { margin-top: 12px; padding-top: 24px; border-top: 1px solid var(--line); }
+.notfound-links h2 { font-size: 17px; font-weight: 650; }
+.notfound-links ul { margin-top: 10px; padding-left: 1.2em; display: grid; gap: 8px; color: var(--slate); }
+.notfound-links a { color: var(--ink); font-weight: 600; }
+
+/* ---- breadcrumbs ------------------------------------------------------------- */
+
+.breadcrumbs ol { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; list-style: none; margin: 0; padding: 0; font-size: 13px; color: var(--slate); }
+.breadcrumbs li + li::before { content: "/"; margin-right: 6px; color: var(--line-strong); }
+.breadcrumbs a { color: var(--slate); text-decoration: none; }
+.breadcrumbs a:hover, .breadcrumbs a:focus-visible { color: var(--ink); text-decoration: underline; }
+.breadcrumbs [aria-current="page"] { color: var(--ink); font-weight: 600; }
+.breadcrumbs-bar { padding-block: 14px; }
 
 /* ---- narrow screens ---------------------------------------------------------- */
 

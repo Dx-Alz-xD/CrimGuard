@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <title>What Red records · Red</title>
   <meta name="description" content="Exactly what the Red website records about how people use it, what it does not record, and who can see it.">
+  <link rel="canonical" href="/privacy">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -21,6 +22,13 @@
   </header>
 
   <main>
+    <nav class="breadcrumbs breadcrumbs-bar" aria-label="Breadcrumb">
+      <ol>
+        <li><a href="/">Red</a></li>
+        <li aria-current="page">What Red records</li>
+      </ol>
+    </nav>
+
     <section class="matrix" aria-labelledby="privacy-title">
       <div class="matrix-inner">
         <div>
@@ -118,5 +126,15 @@
     <a class="wordmark" href="/"><span class="wordmark-mark" aria-hidden="true"></span>Red</a>
     <span>Runs on Node.js with a built-in SQLite database.</span>
   </footer>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "Red", "item": "/" },
+      { "@type": "ListItem", "position": 2, "name": "What Red records", "item": "/privacy" }
+    ]
+  }
+  </script>
 </body>
 </html>

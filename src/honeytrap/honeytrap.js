@@ -20,12 +20,12 @@
 // as JSON), honeytoken_triggers and platform_audit_log; identity_actions through the throttle.
 
 const crypto = require('node:crypto');
-const { createSubjects } = require('../telemetry/subjects');
+const { createSubjects, redIdOf } = require('../telemetry/subjects');
 const { createEvents } = require('../telemetry/events');
 const { POLICY, decide } = require('./policy');
 const { chooseLure, canaryContext } = require('./lures');
 const { generateCanary, extractCandidates, fingerprint, isFingerprint } = require('./canaries');
-const { latestScore, redIdOf } = require('../identity/scores');
+const { latestScore } = require('../identity/scores');
 
 // Shared-file ids live in their own range, clear of real projects and of the decoy projects in
 // src/telemetry/honeytokens.js (900,000,000+).

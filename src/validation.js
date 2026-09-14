@@ -70,4 +70,32 @@ function profileFields(body, current) {
   return fields;
 }
 
-module.exports = { singleLine, multiLine, normalizeEmail, personName, requiredEmail, newPassword, projectFields, profileFields };
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// A calendar date sent as YYYY-MM-DD. Empty is null, unless the field is required.
+function dateField(value, field, { required = false } = {}) {
+  if (value === null || value === undefined || value === '') {
+    if (required) throw new HttpError(400, `${field} is required.`);
+    return null;
+  }
+  if (typeof value !== 'string' || !ISO_DATE.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
+    throw new HttpError(400, `${field} must be a date, as YYYY-MM-DD.`);
+  }
+  return value;
+}
+
+function oneOf(value, allowed, field) {
+  if (!allowed.includes(value)) throw new HttpError(400, `${field} must be one of: ${allowed.join(', ')}.`);
+  return value;
+}
+
+function numberUpTo(value, field, max) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0 || n > max) throw new HttpError(400, `${field} must be between 0 and ${max}.`);
+  return n;
+}
+
+module.exports = {
+  singleLine, multiLine, normalizeEmail, personName, requiredEmail, newPassword, projectFields, profileFields,
+  dateField, oneOf, numberUpTo,
+};

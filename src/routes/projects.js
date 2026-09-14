@@ -4,35 +4,14 @@ const { HttpError } = require('../http/errors');
 const { readJson } = require('../http/request');
 const { sendJson, noContent } = require('../http/response');
 const { projectFields } = require('../validation');
-const { isDecoyId } = require('../telemetry/honeytokens');
+const { createDecoyTrap } = require('./decoys');
 
 const MAX_ROLE_GRANTS = 50;
 
 function registerProjectRoutes(router, { stores, sessions, telemetry, protection }) {
   const { projects, files, roles, audit } = stores;
-
-  // Taking the bait. Changing or deleting a decoy is recorded, every session this account has
-  // is revoked, and the request is refused as a signed-out one - which is what sends the
-  // browser back to the sign-in page.
-  //
-  // The id being in the decoy range is not enough on its own: trip() returns null unless there
-  // is a live decoy with that id planted for this very account. Otherwise anyone could sign
-  // themselves out by guessing a number, and the request falls through to the ordinary
-  // "no such project" instead.
-  async function springTrap({ req, user, id, interaction, client }) {
-    const report = await telemetry.honeytokens.trip({
-      user, decoyId: id, interaction, client, tokenHash: req.sessionTokenHash,
-    });
-    if (!report) return;
-
-    stores.sessions.removeAll(user.id);
-    stores.audit.record('security.honeytoken_tripped', {
-      actor: user, target: user, ...client, details: { interaction, decoy: report.decoy, score: report.score },
-    });
-    // The identity throttle turns it into a freeze: signing back in waits for an admin.
-    await protection?.onHoneytokenTrip(report);
-    throw new HttpError(401, 'Your session has ended. Please sign in again.');
-  }
+  // Changing or deleting a decoy project is the trip (routes/decoys.js).
+  const decoys = createDecoyTrap({ stores, telemetry, protection });
 
   // Listing is one access of the project list, carrying how many it returned, rather than one
   // access per project: opening the dashboard is not the same as opening every project on it.
@@ -81,7 +60,7 @@ function registerProjectRoutes(router, { stores, sessions, telemetry, protection
 
   router.patch('/api/projects/:id', async ({ req, res, params, client }) => {
     const user = sessions.requireUser(req);
-    if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, interaction: 'modified', client });
+    await decoys.spring({ req, user, id: params.id, interaction: 'modified', client });
     const existing = projects.get(params.id, user.id);
     if (!existing) throw new HttpError(404, 'Project not found.');
     const fields = projectFields(await readJson(req), existing);
@@ -140,7 +119,7 @@ function registerProjectRoutes(router, { stores, sessions, telemetry, protection
 
   router.delete('/api/projects/:id', async ({ req, res, params, client }) => {
     const user = sessions.requireUser(req);
-    if (isDecoyId(params.id)) await springTrap({ req, user, id: params.id, interaction: 'deleted', client });
+    await decoys.spring({ req, user, id: params.id, interaction: 'deleted', client });
     const existing = projects.get(params.id, user.id);
     if (!existing || !projects.remove(params.id, user.id)) throw new HttpError(404, 'Project not found.');
     telemetry.onAccess({
