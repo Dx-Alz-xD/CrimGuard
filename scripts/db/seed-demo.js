@@ -26,6 +26,9 @@ const { createTelemetry } = require('../../src/telemetry');
 const { assess } = require('../../src/security/genai');
 
 const PASSWORD = 'demo-password-2026';
+// Distinct documents the company holds. Every shape draws from these, so a busy day is genuinely
+// a day of touching more different things rather than the same eight more often.
+const ESTATE_SIZE = 600;
 const DOMAIN = 'red.local';
 const MB = 1024 * 1024;
 const DAY = 86400000;
@@ -228,9 +231,21 @@ async function main() {
     const crimUserId = await subjects.forUser(person);
     const personRand = random(person.id * 7919);
     const deviceId = await subjects.forDevice(crimUserId, `seed-${person.id}-laptop`, { os: 'Win32' });
+    // The real projects, plus the wider file estate people actually work across. Without this the
+    // pool is the cap: files_accessed_count counts distinct resources, so eight projects means
+    // eight, however much anyone does.
     const resources = [];
     for (const { project } of owned.values()) {
       resources.push(await subjects.forResource('project', project.id, project.name));
+    }
+    for (let n = 1; n <= ESTATE_SIZE; n += 1) {
+      // 'project' is the resource kind that maps to a file; forResource returns null for a kind
+      // it does not know, and a null resource_id is dropped before anything is counted.
+      const id = await subjects.forResource('project', 500000 + n, `document-${n}`);
+      if (id) resources.push(id);
+    }
+    if (resources.length < ESTATE_SIZE) {
+      throw new Error(`Only ${resources.length} resources resolved; events would be written with no resource.`);
     }
 
     let written = 0;
@@ -270,16 +285,22 @@ async function main() {
       }
 
       // The shadow-AI user pastes work into a model most days, and more of it lately.
-      if (person.shape === 'shadow_ai' && weekday && personRand() > 0.45) {
-        const chars = Math.round(1500 + personRand() * 9000 * (0.4 + t));
+      if (person.shape === 'shadow_ai' && weekday && personRand() > 0.35) {
+        // A document goes in the pieces a context window forces: several large copies together,
+        // and more of them as the habit sets in.
         const destination = pick(personRand, ['chatgpt.com', 'claude.ai', 'gemini.google.com', 'perplexity.ai']);
-        const verdict = assess({ destination, chars, sensitivity: 3 });
-        await events.clipboard({
-          userId: crimUserId, deviceId, occurredAt: at(volume + 3), charCount: chars,
-          sourceApp: 'red', destinationApp: destination,
-          classification: 'confidential', detectedPatterns: chars > 8000 ? ['source_code'] : [],
-        });
-        await subjects.forExternalDomain(destination, verdict.category);
+        const copies = 2 + Math.round(personRand() * 4 * (0.5 + t));
+        for (let c = 0; c < copies; c += 1) {
+          const chars = Math.round(5500 + personRand() * 9000 * (0.5 + t));
+          await events.clipboard({
+            userId: crimUserId, deviceId,
+            // Inside one five-minute window, which is what makes it a burst rather than a habit.
+            occurredAt: new Date(Date.parse(at(volume + 3)) + c * 45000).toISOString(),
+            charCount: chars, sourceApp: 'red', destinationApp: destination,
+            classification: 'confidential', detectedPatterns: personRand() > 0.6 ? ['source_code'] : [],
+          });
+        }
+        await subjects.forExternalDomain(destination, assess({ destination, chars: 9000 }).category);
       }
     }
     process.stdout.write(`  ${person.name.padEnd(20)} ${person.shape.padEnd(18)} ${written} events\n`);
@@ -313,12 +334,22 @@ async function main() {
     // The busy-but-explained one has a ticket covering the migration, which is what keeps the
     // score down: the engine is supposed to tell a sanctioned spike from an unexplained one.
     if (person.shape === 'explained') {
+      const org = await subjects.organization();
+      const openedAt = new Date(Date.now() - 40 * DAY).toISOString();
+      // Approved by whoever runs IT, which is who would sign off a migration.
+      const { rows: approver } = await db.query("SELECT id FROM users WHERE full_name = 'Daniel Okafor' LIMIT 1");
       await db.query(
-        `INSERT INTO tickets (org_id, external_key, title, ticket_type, status, is_approved, opened_at, due_at, expected_daily_file_volume)
-         VALUES (1, 'MIG-204', 'Legacy cluster migration', 'migration', 'in_progress', true, ?, ?, 300)`,
-        [new Date(Date.now() - 40 * DAY).toISOString(), new Date(Date.now() + 20 * DAY).toISOString()],
-      ).catch(() => {});
-      console.log(`  ${person.name} has an approved migration ticket`);
+        `INSERT INTO tickets (org_id, external_key, title, ticket_type, status, approved_by, opened_at, due_at, expected_daily_file_volume)
+         VALUES (?, 'MIG-204', 'Legacy cluster migration', 'db_migration', 'in_progress', ?, ?, ?, 300)`,
+        [org, approver[0]?.id ?? null, openedAt, new Date(Date.now() + 20 * DAY).toISOString()],
+      );
+      const { rows: ticket } = await db.query('SELECT id FROM tickets WHERE org_id = ? AND external_key = ?', [org, 'MIG-204']);
+      // Without the assignment the ticket belongs to nobody, and explains nobody's day.
+      await db.query(
+        'INSERT INTO ticket_assignments (ticket_id, user_id, assigned_at) VALUES (?, ?, ?)',
+        [ticket[0].id, crimUserId, openedAt],
+      );
+      console.log(`  ${person.name} has an approved migration ticket (MIG-204), assigned`);
     }
   }
 
