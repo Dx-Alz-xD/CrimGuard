@@ -1,6 +1,7 @@
 'use strict';
 
 const { PRIVILEGED_ROLES } = require('../security/access');
+const { TIERS, NO_ACCESS } = require('../security/limits');
 
 class DuplicateFileNameError extends Error {}
 
@@ -11,14 +12,41 @@ class DuplicateFileNameError extends Error {}
 //   - it is in one of their own projects
 //   - they are an admin or the CEO, and their clearance covers the file's confidentiality
 //   - it was shared with them by name, at any confidentiality
-//   - it was shared with their role, and the role's clearance covers the file's confidentiality
+//   - it, or the project holding it, was shared with their role, and the role's clearance covers
+//     the file's confidentiality
 const PRIVILEGED = PRIVILEGED_ROLES.map((role) => `'${role}'`).join(', ');
-const person = (alias, param) =>
-  `${alias} AS (SELECT u.id, u.role, r.id AS role_id, r.clearance FROM users u JOIN roles r ON r.name = u.role WHERE u.id = ${param})`;
+
+// Risk limiting, applied where clearance is read rather than where files are matched, so every
+// query below inherits it without knowing it exists. The thresholds and drops come from
+// security/limits.js; this is the SQL that puts them to work.
+//
+// `clearance` is the effective one: the role's, cut to the baseline minus the tier's drop when
+// the account is over a threshold and nobody has switched limiting off for it. The role's own
+// clearance stays available as role_clearance, because handing out roles and managing files
+// are judged on what someone *is*, not on how risky they currently look.
+const BASELINE = '(SELECT CAST(AVG(confidentiality) AS INTEGER) FROM project_files)';
+const limitCase = (then, otherwise) => `CASE
+      WHEN e.user_id IS NOT NULL OR s.score IS NULL THEN ${otherwise}
+      ${TIERS.map((tier) => `WHEN s.score >= ${tier.minScore} THEN ${then(tier)}`).join(' ')}
+      ELSE ${otherwise} END`;
+
+const person = (alias, param) => `${alias} AS (
+  SELECT u.id, u.role, r.id AS role_id, r.clearance AS role_clearance,
+    ${limitCase(
+    (tier) => `MAX(${NO_ACCESS}, MIN(r.clearance, COALESCE(${BASELINE}, r.clearance) - ${tier.drop}))`,
+    'r.clearance',
+  )} AS clearance,
+    ${limitCase((tier) => `'${tier.name}'`, 'NULL')} AS limit_tier
+  FROM users u
+  JOIN roles r ON r.name = u.role
+  LEFT JOIN user_risk_state s ON s.user_id = u.id
+  LEFT JOIN risk_limit_exemptions e ON e.user_id = u.id
+  WHERE u.id = ${param})`;
 const sharedWith = (who) => `(
   EXISTS (SELECT 1 FROM file_user_grants g WHERE g.file_id = f.id AND g.user_id = ${who}.id)
   OR (f.confidentiality <= ${who}.clearance
-      AND EXISTS (SELECT 1 FROM file_role_grants g WHERE g.file_id = f.id AND g.role_id = ${who}.role_id)))`;
+      AND (EXISTS (SELECT 1 FROM file_role_grants g WHERE g.file_id = f.id AND g.role_id = ${who}.role_id)
+           OR EXISTS (SELECT 1 FROM project_role_grants g WHERE g.project_id = f.project_id AND g.role_id = ${who}.role_id))))`;
 const visibleTo = (who) =>
   `(p.owner_id = ${who}.id OR (${who}.role IN (${PRIVILEGED}) AND f.confidentiality <= ${who}.clearance) OR ${sharedWith(who)})`;
 
@@ -70,6 +98,22 @@ function createFileStore(db, { transaction }) {
       WHERE p.owner_id = $owner
       ORDER BY f.updated_at DESC, f.id DESC`),
 
+    projectRoleGrants: db.prepare(`
+      SELECT r.id, r.name, r.label, r.clearance FROM project_role_grants g JOIN roles r ON r.id = g.role_id
+      WHERE g.project_id = ? ORDER BY r.clearance, r.label`),
+    revokeProjectRoles: db.prepare('DELETE FROM project_role_grants WHERE project_id = ? AND role_id NOT IN (SELECT value FROM json_each(?))'),
+    grantProjectRoles: db.prepare('INSERT OR IGNORE INTO project_role_grants (project_id, role_id, granted_by) SELECT ?, value, ? FROM json_each(?)'),
+    // Everyone who already holds a role, with the files granted to each by name. Used to work
+    // out what a new account of that role should start with.
+    peersInRole: db.prepare(`
+      SELECT u.id AS user_id, g.file_id
+      FROM users u LEFT JOIN file_user_grants g ON g.user_id = u.id
+      WHERE u.role = ? AND u.id <> ?
+      ORDER BY u.id`),
+    // Those files, with the confidentiality the newcomer's clearance has to cover.
+    grantCandidates: db.prepare(`
+      SELECT f.id, f.confidentiality FROM project_files f
+      WHERE f.id IN (SELECT value FROM json_each(?))`),
     roleGrants: db.prepare(`
       SELECT r.id, r.name, r.label, r.clearance FROM file_role_grants g JOIN roles r ON r.id = g.role_id
       WHERE g.file_id = ? ORDER BY r.clearance, r.label`),
@@ -145,6 +189,34 @@ function createFileStore(db, { transaction }) {
       q.revokeUsers.run(fileId, people);
       q.grantUsers.run(fileId, grantedBy, people);
       return access(fileId);
+    }),
+
+    // Which roles a whole project is shared with, and setting that list. Every file in the
+    // project follows, including ones uploaded afterwards - still bounded by each role's
+    // clearance, so this widens who can reach a project, never how sensitive a file may be.
+    // One entry per existing holder of `role`, listing the files each was given by name.
+    peersInRole: (role, exceptUserId) => {
+      const byUser = new Map();
+      for (const row of q.peersInRole.all(role, exceptUserId)) {
+        if (!byUser.has(row.user_id)) byUser.set(row.user_id, []);
+        if (row.file_id != null) byUser.get(row.user_id).push(row.file_id);
+      }
+      return [...byUser].map(([userId, fileIds]) => ({ userId, fileIds }));
+    },
+    confidentialityOf: (fileIds) => q.grantCandidates.all(JSON.stringify(fileIds)),
+    // Hands a new account the files its role-mates already have. Never widens a file's reach:
+    // it only repeats grants that already exist for other people.
+    grantToUser: (userId, fileIds, grantedBy) => transaction(() => {
+      for (const fileId of fileIds) q.grantUsers.run(fileId, grantedBy, JSON.stringify([userId]));
+      return fileIds.length;
+    }),
+
+    projectRoles: (projectId) => q.projectRoleGrants.all(projectId),
+    setProjectRoles: (projectId, { roleIds, grantedBy }) => transaction(() => {
+      const roles = JSON.stringify(roleIds);
+      q.revokeProjectRoles.run(projectId, roles);
+      q.grantProjectRoles.run(projectId, grantedBy, roles);
+      return q.projectRoleGrants.all(projectId);
     }),
   };
 }

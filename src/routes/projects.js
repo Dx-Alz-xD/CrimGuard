@@ -6,8 +6,10 @@ const { sendJson, noContent } = require('../http/response');
 const { projectFields } = require('../validation');
 const { isDecoyId } = require('../telemetry/honeytokens');
 
+const MAX_ROLE_GRANTS = 50;
+
 function registerProjectRoutes(router, { stores, sessions, telemetry }) {
-  const { projects } = stores;
+  const { projects, files, roles, audit } = stores;
 
   // Taking the bait. Changing or deleting a decoy is recorded, every session this account has
   // is revoked, and the request is refused as a signed-out one - which is what sends the
@@ -93,6 +95,43 @@ function registerProjectRoutes(router, { stores, sessions, telemetry }) {
       telemetry.onText({ user, tokenHash: req.sessionTokenHash, client, text: `${fields.name}\n${fields.description}` });
     }
     sendJson(res, 200, { project });
+  });
+
+  // Which roles a whole project is shared with. The owner decides: it is their project, and a
+  // role grant can only reach what that role's clearance already allows. PUT replaces the whole
+  // list, the way file access does.
+  router.get('/api/projects/:id/access', async ({ req, res, params }) => {
+    const user = sessions.requireUser(req);
+    if (!projects.get(params.id, user.id)) throw new HttpError(404, 'Project not found.');
+    sendJson(res, 200, { roles: files.projectRoles(params.id), available: roles.list() });
+  });
+
+  router.put('/api/projects/:id/access', async ({ req, res, params, client }) => {
+    const user = sessions.requireUser(req);
+    const project = projects.get(params.id, user.id);
+    if (!project) throw new HttpError(404, 'Project not found.');
+
+    const body = await readJson(req);
+    const roleIds = body.roles === undefined ? [] : body.roles;
+    if (!Array.isArray(roleIds) || roleIds.length > MAX_ROLE_GRANTS
+      || !roleIds.every((id) => Number.isInteger(id) && id > 0)) {
+      throw new HttpError(400, `Roles must be a list of up to ${MAX_ROLE_GRANTS} ids.`);
+    }
+    const unique = [...new Set(roleIds)];
+    if (!unique.every((id) => roles.byId(id))) {
+      throw new HttpError(400, 'One of those roles no longer exists. Reload and try again.');
+    }
+
+    const granted = files.setProjectRoles(params.id, { roleIds: unique, grantedBy: user.id });
+    audit.record('project.shared', {
+      actor: user, target: user, ...client,
+      details: { project: project.name, roles: granted.map((role) => role.name) },
+    });
+    telemetry.onAccess({
+      user, tokenHash: req.sessionTokenHash, client, kind: 'project', id: params.id, name: project.name,
+      action: 'permission_change',
+    });
+    sendJson(res, 200, { roles: granted });
   });
 
   router.delete('/api/projects/:id', async ({ req, res, params, client }) => {

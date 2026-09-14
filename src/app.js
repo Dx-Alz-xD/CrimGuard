@@ -69,7 +69,18 @@ function createApp({
   const sessions = createSessionManager({ sessions: stores.sessions, policy: sessionPolicy, secureCookies, now });
   // Behavioural telemetry into the CrimGuard risk database. Without that database this is a
   // no-op object, so every route below behaves the same whether or not it is connected.
-  const telemetry = createTelemetry(crimguard);
+  // Scores come back from the risk database and are kept in red.db, because that is where the
+  // SQL that decides who can see which file can reach them.
+  const telemetry = createTelemetry(crimguard, {
+    onScored: ({ redUserId, score, level, scenario, date }) => {
+      try {
+        stores.risk.setState(redUserId, { score, level, scenario, scoredOn: date });
+      } catch (err) {
+        // An account deleted between scoring and writing back is not an error worth raising.
+        if (!/FOREIGN KEY constraint failed/.test(err.message)) throw err;
+      }
+    },
+  });
   const deps = { stores, sessions, passwords, throttle, limits: rateLimits, telemetry, crimguard, maxFileBytes, sessionPolicy, now };
 
   const router = createRouter();

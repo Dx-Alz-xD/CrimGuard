@@ -20,7 +20,7 @@
       <a href="#activity" data-tab="activity">Activity</a>
     </nav>
     <div class="topbar-end">
-      <span class="role-badge is-admin">Admin</span>
+      <span class="role-badge is-admin" id="role-badge" hidden></span>
       <button class="account-button" id="account-button" type="button" popovertarget="account-menu">
         <span class="avatar is-admin" id="account-avatar" aria-hidden="true"></span>
         <span class="account-name" id="account-name"></span>
@@ -42,7 +42,7 @@
     <header class="page-header">
       <div>
         <h1>My projects</h1>
-        <p>Only you can see these, even as an admin.</p>
+        <p>Your own projects. Other admins and the CEO can see them in CrimGuard.</p>
       </div>
       <button class="btn btn-primary" type="button" data-new-project>New project</button>
     </header>
@@ -59,11 +59,7 @@
     </header>
 
     <div class="toolbar">
-      <div class="filter" id="role-filter" role="group" aria-label="Filter by role">
-        <button type="button" data-role="all" aria-pressed="true">All <span class="count" data-count="all"></span></button>
-        <button type="button" data-role="admin" aria-pressed="false">Admins <span class="count" data-count="admin"></span></button>
-        <button type="button" data-role="user" aria-pressed="false">Users <span class="count" data-count="user"></span></button>
-      </div>
+      <div class="filter" id="role-filter" role="group" aria-label="Filter by role"></div>
       <input class="search" id="user-search" type="search" placeholder="Search by name or email" aria-label="Search people">
     </div>
 
@@ -82,6 +78,30 @@
         <tbody id="user-rows"></tbody>
       </table>
     </div>
+
+    <section class="page-section" aria-labelledby="roles-title">
+      <header class="page-header">
+        <div>
+          <h2 id="roles-title">Roles</h2>
+          <p id="roles-note">Clearance is the most confidential file a role can be given.</p>
+        </div>
+        <button class="btn btn-secondary" type="button" id="add-role" hidden>New role</button>
+      </header>
+      <div class="surface table-wrap">
+        <table class="table">
+          <thead>
+            <tr>
+              <th scope="col">Role</th>
+              <th scope="col">Clearance</th>
+              <th scope="col" class="num">People</th>
+              <th scope="col">Can use</th>
+              <th scope="col"><span class="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody id="role-rows"></tbody>
+        </table>
+      </div>
+    </section>
   </main>
 
   <main class="page" data-panel="activity" hidden>

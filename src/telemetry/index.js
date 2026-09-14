@@ -18,6 +18,7 @@ const { parseBatch } = require('./ingest');
 const { featuresFor } = require('./features');
 const { featureLayout, writeSnapshot } = require('./snapshots');
 const { createScorer, loadCatalog, loadOrgSettings } = require('./scoring');
+const { MODEL_VERSION } = require('../../crimguard/risk');
 const { classifyText } = require('./patterns');
 const { createHoneytokens } = require('./honeytokens');
 const { locate } = require('./geo');
@@ -68,6 +69,9 @@ function createTelemetry(db, {
   onError = (err) => console.error('Telemetry:', err.message),
   honeytokenScore = Number(process.env.RED_HONEYTOKEN_SCORE) || undefined,
   onHoneytokenTrip = null,
+  // Called with every score as it is computed. The website uses it to keep its own copy, which
+  // is what risk limiting reads when it decides which files someone can still see.
+  onScored = null,
 } = {}) {
   if (!db) return createNoop();
 
@@ -127,6 +131,22 @@ function createTelemetry(db, {
 
   // Waits for everything queued so far. Used by the tests and by shutdown.
   const flush = () => tail;
+
+  // Hands a finished score to whoever asked for it. A listener that throws must not take the
+  // scoring run down with it.
+  function report(redUserId, result, date) {
+    if (!onScored) return;
+    try {
+      onScored({
+        redUserId, date,
+        score: result.finalScore,
+        level: result.riskLevel,
+        scenario: result.scenario ?? null,
+      });
+    } catch (err) {
+      onError(err);
+    }
+  }
 
   // --- what the routes report ------------------------------------------------------
 
@@ -379,7 +399,9 @@ function createTelemetry(db, {
         if (!result) continue;
         scored += 1;
         const redUserId = person.okta_user_id ? Number(person.okta_user_id.slice(4)) : null;
-        if (redUserId && date === today() && await honeytokens.plantIfNeeded(redUserId, result.finalScore)) planted += 1;
+        if (!redUserId) continue;
+        report(redUserId, result, date);
+        if (date === today() && await honeytokens.plantIfNeeded(redUserId, result.finalScore)) planted += 1;
       }
       return { date, people: people.length, snapshots, scored, planted };
     },
@@ -403,11 +425,68 @@ function createTelemetry(db, {
       if (active) {
         await writeSnapshot(db, { userId: crimUserId, date, features, layout });
         const result = await scorer.scoreUserDay(crimUserId, date);
-        // Crossing the threshold is what puts a decoy in front of them.
-        if (result) await honeytokens.plantIfNeeded(user.id, result.finalScore);
+        if (result) {
+          report(user.id, result, date);
+          // Crossing the threshold is what puts a decoy in front of them.
+          await honeytokens.plantIfNeeded(user.id, result.finalScore);
+        }
       }
       refreshed.set(key, { at: Date.now(), crimUserId });
       return crimUserId;
+    },
+
+    // --- test overrides -------------------------------------------------------------------
+    //
+    // TEMPORARY. Lets an admin set a person's variables, or their score outright, so the
+    // thresholds downstream - limiting at 75 and 85, decoys at 40 - can be exercised without
+    // waiting for real behaviour to produce them. Everything it writes is ordinary data in the
+    // ordinary tables, so removing this method removes the feature completely.
+    async override(user, { date = today(), features = {}, score = null, level = null } = {}) {
+      await initialize();
+      const crimUserId = await subjects.forUser(user);
+
+      // Merge over whatever the day already holds, so setting one variable doesn't erase the rest.
+      const { rows } = await db.query(
+        'SELECT * FROM v_risk_feature_vector WHERE user_id = ? AND snapshot_date = ?', [crimUserId, date],
+      );
+      const current = rows[0] ?? {};
+      const merged = {};
+      for (const meta of catalog) {
+        const value = Object.hasOwn(features, meta.key) ? features[meta.key] : current[meta.key];
+        if (value !== undefined && value !== null) merged[meta.key] = value;
+      }
+      await writeSnapshot(db, { userId: crimUserId, date, features: merged, layout });
+
+      // With no forced score, the real engine runs over the values just written.
+      if (score === null) {
+        const result = await scorer.scoreUserDay(crimUserId, date);
+        if (result) {
+          report(user.id, result, date);
+          await honeytokens.plantIfNeeded(user.id, result.finalScore);
+        }
+        return { date, forced: false, score: result?.finalScore ?? null, level: result?.riskLevel ?? null };
+      }
+
+      // A forced score skips the engine. Marked in the payload so a reader can tell it apart
+      // from one the detectors actually produced.
+      const band = level ?? (score >= 90 ? 'critical' : score >= 70 ? 'high' : score >= 40 ? 'medium' : 'low');
+      const { rows: snap } = await db.query(
+        'SELECT id FROM risk_feature_snapshot WHERE user_id = ? AND snapshot_date = ?', [crimUserId, date],
+      );
+      const snapshotId = snap[0]?.id;
+      if (snapshotId) {
+        await db.query('DELETE FROM risk_scores WHERE snapshot_id = ?', [snapshotId]);
+        await db.query(
+          `INSERT INTO risk_scores (snapshot_id, user_id, model_version, final_score, risk_level, scenario,
+             context_multiplier, hr_amplifier, feature_contributions, dashboard_payload)
+           VALUES (?, ?, ?, ?, ?, 'other', 1, 1, '{}', ?)`,
+          [snapshotId, crimUserId, `${MODEL_VERSION}+override`, score, band,
+            JSON.stringify({ override: true, setAt: new Date().toISOString() })],
+        );
+      }
+      report(user.id, { finalScore: score, riskLevel: band, scenario: null }, date);
+      await honeytokens.plantIfNeeded(user.id, score);
+      return { date, forced: true, score, level: band };
     },
 
     // --- decoys ------------------------------------------------------------------------
@@ -580,6 +659,7 @@ function createNoop() {
     ingest: () => ({ accepted: 0 }),
     runDay: async () => ({ people: 0, snapshots: 0, scored: 0 }),
     refreshUser: async () => null,
+    override: async () => { throw new Error('The risk database is not connected.'); },
     honeytokens: { plantScore: Infinity, listFor: async () => [], trip: async () => null, plantIfNeeded: async () => null },
     report: { overview: unavailable, person: unavailable, forRedUser: async () => null, catalogue: unavailable },
   };

@@ -15,6 +15,7 @@ const outDir = path.join(root, 'demo');
 const PAGE_LINKS = [
   ['/admin/login', 'admin-login.html'],
   ['/admin/risk', 'risk.html'],
+  ['/crimguard', 'crimguard.html'],
   ['/dashboard', 'dashboard.html'],
   ['/privacy', 'privacy.html'],
   ['/signup', 'signup.html'],
@@ -23,11 +24,11 @@ const PAGE_LINKS = [
   ['/', 'index.html'],
 ];
 
-// The risk console reads the CrimGuard database through the server, so there is nothing for it
-// to show without one. Its page, and the two scripts that talk to those endpoints, are left out
-// rather than shipped broken.
-const SERVER_ONLY_PAGES = new Set(['risk.html']);
-const SERVER_ONLY_SCRIPTS = ['telemetry.js', 'risk-panel.js', 'risk-console.js'];
+// The risk console and the CrimGuard dashboard both read the risk database through the server,
+// so there is nothing for either to show without one. Their pages, and the scripts that talk to
+// those endpoints, are left out rather than shipped broken.
+const SERVER_ONLY_PAGES = new Set(['risk.html', 'crimguard.html']);
+const SERVER_ONLY_SCRIPTS = ['telemetry.js', 'risk-panel.js', 'risk-console.js', 'crimguard.js'];
 
 function toStatic(html) {
   let out = html.replaceAll('"/static/', '"static/');
@@ -35,8 +36,8 @@ function toStatic(html) {
   for (const script of SERVER_ONLY_SCRIPTS) {
     out = out.replace(new RegExp(`[ \t]*<script src="static/${script}"></script>\r?\n`, 'g'), '');
   }
-  // A link into the risk console would be a dead end in a folder that doesn't contain it.
-  out = out.replace(/\s*<a href="risk\.html"[^>]*>.*?<\/a>/g, '');
+  // A link into either console would be a dead end in a folder that doesn't contain them.
+  out = out.replace(/\s*<a href="(?:risk|crimguard)\.html"[^>]*>.*?<\/a>/g, '');
 
   const demoScript = '<script src="static/demo-api.js"></script>';
   out = out.includes('<script src="static/app.js"></script>')

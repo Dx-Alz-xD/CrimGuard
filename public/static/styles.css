@@ -1378,7 +1378,7 @@ select {
 .cg-live[data-state="stale"] { color: var(--red-text); }
 .cg-live[data-state="stale"] .cg-pulse { background: var(--warn); }
 
-.cg-main { max-width: 1320px; margin-inline: auto; padding: 28px var(--gutter) 64px; display: grid; gap: 22px; }
+.cg-main { max-width: 1320px; margin-inline: auto; padding: 28px var(--gutter) 64px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 22px; }
 
 .cg-summary { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 18px 40px; }
 .cg-heading h1 { font-size: 40px; font-weight: 780; font-stretch: 72%; line-height: 0.95; letter-spacing: -0.005em; }
@@ -1425,7 +1425,7 @@ select {
 .cg-person:hover { background: var(--hover); text-decoration: none; }
 .cg-person[aria-current="true"] { background: var(--cg-wash); }
 .cg-person .avatar { width: 34px; height: 34px; }
-.cg-person-text { display: grid; min-width: 0; }
+.cg-person-text { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; }
 .cg-person-name, .cg-person-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cg-person-name { font-weight: 600; }
 .cg-person-meta { font-size: 12.5px; color: var(--slate); }
@@ -1441,21 +1441,21 @@ select {
 .cg-record { min-width: 0; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; }
 .cg-record > .empty { padding-block: 96px; }
 
-.cg-record-head { display: grid; gap: 20px; padding: 24px; }
+.cg-record-head { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; padding: 24px; }
 .cg-identity { display: flex; align-items: center; gap: 16px; min-width: 0; }
 .cg-identity-text { min-width: 0; }
 .avatar.avatar-lg { width: 58px; height: 58px; font-size: 19px; }
 .cg-name { font-size: clamp(30px, 3.4vw, 44px); font-weight: 800; font-stretch: 70%; line-height: 0.95; letter-spacing: -0.005em; overflow-wrap: anywhere; }
 .cg-subline { margin-top: 7px; color: var(--slate); overflow-wrap: anywhere; }
 .cg-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 14px 24px; margin: 0; padding-top: 18px; border-top: 1px solid var(--line); }
-.cg-fact { display: grid; align-content: start; gap: 3px; min-width: 0; }
+.cg-fact { display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 3px; min-width: 0; }
 .cg-fact dt { font-size: 12.5px; color: var(--slate); }
 .cg-fact dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
 .cg-role { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; }
 .cg-role .level-text { font-weight: 500; color: var(--slate); }
 .cg-bio { max-width: 70ch; color: var(--slate); white-space: pre-wrap; }
 
-.cg-section { display: grid; gap: 12px; min-width: 0; padding: 20px 24px 22px; border-top: 1px solid var(--line); }
+.cg-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; min-width: 0; padding: 20px 24px 22px; border-top: 1px solid var(--line); }
 .cg-section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 16px; }
 .cg-section-head h3 { font-size: 19px; font-weight: 750; font-stretch: 78%; letter-spacing: 0; }
 .cg-section-meta, .cg-section-note { font-size: 13px; color: var(--slate); }
@@ -1473,8 +1473,9 @@ select {
 .cg-drivers li { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13.5px; border-bottom: 1px solid var(--line); }
 .cg-drivers-none { grid-column: 1 / -1; }
 
-.cg-projects { display: grid; gap: 12px; }
-.cg-project { display: grid; gap: 8px; min-width: 0; padding: 14px 16px; background: var(--canvas); border-radius: 8px; }
+.cg-projects { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+/* An auto track sizes to max-content, so a long file name would widen the whole pane. */
+.cg-project { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; min-width: 0; padding: 14px 16px; background: var(--canvas); border-radius: 8px; }
 .cg-project-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
 .cg-project-head h4 { margin: 0; font-size: 15px; font-weight: 650; overflow-wrap: anywhere; }
 .cg-project-meta { margin-left: auto; font-size: 12.5px; color: var(--slate); }
@@ -1526,3 +1527,46 @@ select {
 @media (prefers-reduced-motion: reduce) {
   .cg-live[data-state="live"] .cg-pulse, .cg-event.is-new { animation: none; }
 }
+
+/* ---- risk limiting, in the CrimGuard record ------------------------------------- */
+
+.cg-limit-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.cg-limit-state { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; font-size: 14px; }
+.cg-limit-why { font-size: 13px; color: var(--slate); text-wrap: pretty; }
+.cg-limit-actions { margin-top: 12px; }
+
+/* ---- sharing a project with a role ---------------------------------------------- */
+
+.share { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin-top: 26px; }
+.share-roles { display: grid; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.share-role {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 8px 10px;
+  font-size: 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.share-role:hover { background: var(--hover); }
+.share-role input { flex: none; width: 15px; height: 15px; margin: 0; accent-color: var(--red); }
+.share-role .muted { margin-left: auto; font-size: 12px; }
+
+/* ---- test-value override (temporary) -------------------------------------------- */
+
+.cg-override { max-width: min(820px, calc(100vw - 32px)); }
+.cg-override .dialog-body { max-height: 62vh; overflow-y: auto; }
+.cg-override-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; }
+.cg-override-group { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.cg-override-group h4 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--slate);
+}
+.cg-override-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px 14px; }
+.cg-override-field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 3px; font-size: 12px; color: var(--slate); }
+.cg-override-field input, .cg-override-field select { height: 32px; font-size: 13px; }

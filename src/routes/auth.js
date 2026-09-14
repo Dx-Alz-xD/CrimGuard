@@ -8,6 +8,7 @@ const { sendJson } = require('../http/response');
 const { DuplicateEmailError } = require('../db/users');
 const { SIGNUP_ROLE, isPrivileged } = require('../security/access');
 const { normalizeEmail, personName, requiredEmail, newPassword } = require('../validation');
+const { planFor } = require('../security/provisioning');
 
 const homeFor = (user) => (isPrivileged(user.role) ? '/admin' : '/dashboard');
 const publicUser = ({ id, name, email, role, clearance }) => ({ id, name, email, role, clearance });
@@ -21,17 +22,52 @@ function tooManyAttempts(seconds, what = 'attempts') {
 }
 
 // Shared by public sign-up and admins adding a person.
-async function createAccount({ users, passwords }, body, { role, mustChangePassword = false }) {
+// Gives a new account what its role-mates already have: the files most of them hold, as many as
+// they hold on average, never above the role's clearance. With no peers there is no precedent
+// and nothing is granted. Failing to provision must not fail the sign-up.
+function provision(stores, user) {
+  const { files, roles } = stores;
+  try {
+    const role = roles.byName(user.role);
+    if (!role) return null;
+
+    const peers = files.peersInRole(user.role, user.id);
+    const fileIds = [...new Set(peers.flatMap((peer) => peer.fileIds))];
+    if (!fileIds.length) return null;
+
+    const plan = planFor({ peers, candidates: files.confidentialityOf(fileIds), clearance: role.clearance });
+    if (!plan.granted.length) return null;
+
+    files.grantToUser(user.id, plan.granted, null);
+    return plan;
+  } catch (err) {
+    console.error('Could not provision from peers:', err.message);
+    return null;
+  }
+}
+
+async function createAccount({ users, passwords, files, roles, audit }, body, { role, mustChangePassword = false, actor = null, client = {} }) {
   const name = personName(body.name);
   const email = requiredEmail(body.email);
   const password = newPassword(body.password, { email, name });
   const passwordHash = await passwords.hash(password);
+
+  let user;
   try {
-    return users.create({ name, email, role, passwordHash, mustChangePassword });
+    user = users.create({ name, email, role, passwordHash, mustChangePassword });
   } catch (err) {
     if (err instanceof DuplicateEmailError) throw new HttpError(409, 'An account with that email already exists.');
     throw err;
   }
+
+  const plan = files && roles ? provision({ files, roles }, user) : null;
+  if (plan && audit) {
+    audit.record('account.provisioned', {
+      actor: actor ?? user, target: user, ...client,
+      details: { files: plan.granted.length, fromPeers: plan.peers },
+    });
+  }
+  return { ...user, provisioned: plan ? plan.granted.length : 0 };
 }
 
 function registerAuthRoutes(router, deps) {
@@ -45,7 +81,7 @@ function registerAuthRoutes(router, deps) {
     // Every attempt counts here, not just failures, to slow down mass account creation.
     throttle.fail(ipKey, limits.signupPerIp);
 
-    const user = await createAccount({ users, passwords }, await readJson(req), { role: SIGNUP_ROLE });
+    const user = await createAccount({ ...stores, passwords }, await readJson(req), { role: SIGNUP_ROLE, client });
     const tokenHash = sessions.start(req, res, user);
     audit.record('account.signup', { actor: user, target: user, ...client });
     telemetry.onLogin({ user, client, tokenHash });
@@ -141,4 +177,4 @@ function registerAuthRoutes(router, deps) {
   });
 }
 
-module.exports = { registerAuthRoutes, createAccount, homeFor, publicUser };
+module.exports = { registerAuthRoutes, createAccount, provision, homeFor, publicUser };

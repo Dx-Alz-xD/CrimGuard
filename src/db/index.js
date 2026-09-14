@@ -11,6 +11,7 @@ const { createAuditLog } = require('./audit');
 const { createFileStore } = require('./files');
 const { createRoleStore } = require('./roles');
 const { createPeopleStore } = require('./people');
+const { createRiskStore } = require('./risk');
 
 const STATUSES = ['planning', 'active', 'done'];
 
@@ -58,6 +59,7 @@ function createStores(db) {
     files: createFileStore(db, { transaction: (fn) => transaction(db, fn) }),
     roles: createRoleStore(db),
     people: createPeopleStore(db),
+    risk: createRiskStore(db),
     audit: createAuditLog(db),
   };
 }

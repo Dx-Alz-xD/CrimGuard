@@ -583,6 +583,58 @@
     // Admins and the CEO choose who can see a file; everyone else sees what was chosen.
     const access = isPrivileged(me.role) ? accessDialog(me) : null;
 
+    // Sharing the whole project with roles. Every file in it follows, later ones included,
+    // still bounded by each role's clearance.
+    let projectRoles = [];
+    let allRoles = [];
+    const shareSummary = h('span', { class: 'files-summary' });
+    const shareList = h('div', { class: 'share-roles' });
+
+    async function loadShare() {
+      if (!project) return;
+      try {
+        const data = await api('GET', `/api/projects/${project.id}/access`);
+        projectRoles = data.roles;
+        allRoles = data.available;
+      } catch {
+        projectRoles = [];
+        allRoles = [];
+      }
+      drawShare();
+    }
+
+    async function setShare(roleId, on) {
+      const next = on
+        ? [...projectRoles.map((role) => role.id), roleId]
+        : projectRoles.map((role) => role.id).filter((id) => id !== roleId);
+      try {
+        projectRoles = (await api('PUT', `/api/projects/${project.id}/access`, { roles: next })).roles;
+        toast(on ? 'Shared with that role' : 'No longer shared with that role');
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+      drawShare();
+    }
+
+    function drawShare() {
+      const names = projectRoles.map((role) => role.label || roleLabel(role.name));
+      shareSummary.textContent = names.length
+        ? `Shared with ${names.join(', ')}`
+        : 'Not shared with any role';
+      shareList.replaceChildren(...allRoles.map((role) => {
+        const on = projectRoles.some((granted) => granted.id === role.id);
+        const box = h('input', {
+          type: 'checkbox', id: uid('share-role'), checked: on || null,
+          onchange: () => setShare(role.id, box.checked),
+        });
+        return h('label', { class: 'share-role', for: box.id },
+          box,
+          h('span', {}, role.label || roleLabel(role.name)),
+          levelMeter(role.clearance),
+          h('span', { class: 'muted' }, `up to level ${role.clearance}`));
+      }));
+    }
+
     const titleEl = h('h2', { class: 'drawer-title', id: uid('drawer-title') });
     const meta = h('div', { class: 'drawer-meta' });
     const description = h('p', { class: 'drawer-desc' });
@@ -610,8 +662,16 @@
           dropzone,
           list,
           picker,
-          replacePicker)));
+          replacePicker),
+        h('section', { class: 'share', 'aria-labelledby': uid('share-title') },
+          h('div', { class: 'files-head' },
+            h('div', { class: 'files-title' }, h('h3', {}, 'Share with a role'), shareSummary)),
+          h('p', { class: 'field-hint' },
+            "Everyone in a chosen role sees this project's files, including ones added later, "
+            + 'as far as their clearance reaches.'),
+          shareList)));
     dialog.querySelector('.files-head h3').id = dialog.querySelector('.files').getAttribute('aria-labelledby');
+    dialog.querySelector('.share .files-head h3').id = dialog.querySelector('.share').getAttribute('aria-labelledby');
     document.body.append(dialog);
 
     // The whole panel accepts dropped files, so a near miss doesn't open the file in the browser.
@@ -841,9 +901,13 @@
         renamingId = null;
         errors.clear();
         loading = true;
+        projectRoles = [];
+        drawShare();
         renderProject();
         render();
         if (!dialog.open) dialog.showModal();
+        // Who the project is shared with loads alongside its files.
+        loadShare().catch(() => {});
         try {
           const data = await api('GET', `/api/projects/${next.id}/files`);
           if (!isShowing(next.id)) return;

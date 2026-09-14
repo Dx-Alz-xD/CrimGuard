@@ -18,8 +18,9 @@ test('a fresh database gets every table, and reopening it applies nothing twice'
     const db = openDb(file);
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((row) => row.name);
     assert.deepEqual(tables, [
-      'audit_log', 'auth_throttle', 'file_role_grants', 'file_user_grants', 'project_files', 'projects', 'roles',
-      'schema_migrations', 'sessions', 'user_credentials', 'user_profiles', 'users',
+      'audit_log', 'auth_throttle', 'file_role_grants', 'file_user_grants', 'project_files',
+      'project_role_grants', 'projects', 'risk_limit_exemptions', 'roles', 'schema_migrations', 'sessions',
+      'user_credentials', 'user_profiles', 'user_risk_state', 'users',
     ]);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_migrations').get().n;
     assert.equal(versions, fs.readdirSync(MIGRATIONS_DIR).filter((name) => name.endsWith('.sql')).length);

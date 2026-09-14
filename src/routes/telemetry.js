@@ -231,4 +231,4 @@ function registerTelemetryRoutes(router, { sessions, telemetry, crimguard }) {
   });
 }
 
-module.exports = { registerTelemetryRoutes, EMPLOYMENT_TYPES, LEAVE_TYPES, HR_EVENT_TYPES };
+module.exports = { registerTelemetryRoutes, isoDate: date, EMPLOYMENT_TYPES, LEAVE_TYPES, HR_EVENT_TYPES };

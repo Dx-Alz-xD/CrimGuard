@@ -15,10 +15,11 @@
   <header class="topbar">
     <a class="wordmark" href="index.html"><span class="wordmark-mark" aria-hidden="true"></span>Red</a>
     <nav class="app-nav" aria-label="Sections">
-      <a href="dashboard.html" aria-current="page">Projects</a>
+      <a href="#projects" data-tab="projects">Projects</a>
+      <a href="#shared" data-tab="shared">Shared with me</a>
     </nav>
     <div class="topbar-end">
-      <span class="role-badge">User</span>
+      <span class="role-badge" id="role-badge" hidden></span>
       <button class="account-button" id="account-button" type="button" popovertarget="account-menu">
         <span class="avatar" id="account-avatar" aria-hidden="true"></span>
         <span class="account-name" id="account-name"></span>
@@ -36,15 +37,25 @@
     <button class="menu-item" type="button" id="logout">Log out</button>
   </div>
 
-  <main class="page">
+  <main class="page" data-panel="projects">
     <header class="page-header">
       <div>
         <h1>Projects</h1>
-        <p>Only you can see these.</p>
+        <p>Yours to plan and track. Admins and the CEO can see them too.</p>
       </div>
       <button class="btn btn-primary" type="button" data-new-project>New project</button>
     </header>
     <div id="projects"></div>
+  </main>
+
+  <main class="page" data-panel="shared" hidden>
+    <header class="page-header">
+      <div>
+        <h1>Shared with me</h1>
+        <p>Files from other people's projects that you have been given, by name or through your role.</p>
+      </div>
+    </header>
+    <div id="shared"></div>
   </main>
 
   <div class="toast" id="toast" role="status" hidden></div>

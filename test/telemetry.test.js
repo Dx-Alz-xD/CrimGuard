@@ -535,6 +535,118 @@ test('a decoy id that was never planted is just a missing project', async (t) =>
   assert.equal((await b('GET', '/api/me')).status, 200, 'and the session is untouched');
 });
 
+// --- the test-value override (temporary) -----------------------------------------------------
+
+test('an admin can force a score, which is what drives limiting', async (t) => {
+  const app = await startWithRisk();
+  t.after(() => app.close());
+
+  const { b, user } = await app.signUp('Vera');
+  await b('GET', '/api/projects');
+  // Limiting measures down from the average confidentiality of the files here, so there has to
+  // be at least one file for there to be an average at all.
+  const project = (await b('POST', '/api/projects', { name: 'Something to measure' })).body.project;
+  await fetch(`${app.base}/api/projects/${project.id}/files`, {
+    method: 'POST',
+    headers: { cookie: b.getCookie(), 'content-type': 'application/octet-stream', 'x-file-name': 'notes.txt' },
+    body: Buffer.from('x'),
+  });
+  await app.telemetry.flush();
+  const admin = await app.signInAdmin();
+  const url = `/api/crimguard/people/${user.id}/override`;
+
+  const forced = await admin.b('PUT', url, { score: 88 });
+  assert.equal(forced.status, 200, JSON.stringify(forced.body));
+  assert.equal(forced.body.forced, true);
+  assert.equal(forced.body.score, 88);
+  assert.equal(forced.body.level, 'high');
+
+  // The score reaches red.db, which is where file visibility reads it from.
+  assert.equal(app.db.prepare('SELECT score FROM user_risk_state WHERE user_id = ?').get(user.id).score, 88);
+  assert.equal(forced.body.limit.tier, 'tightened');
+
+  // Back down again, and the limit lifts.
+  const calm = await admin.b('PUT', url, { score: 10 });
+  assert.equal(calm.body.limit.tier, null);
+  assert.equal(calm.body.limit.limited, false);
+});
+
+test('with no files there is no average, so a high score limits nothing', async (t) => {
+  const app = await startWithRisk();
+  t.after(() => app.close());
+
+  const { b, user } = await app.signUp('Vaughn');
+  await b('GET', '/api/projects');
+  await app.telemetry.flush();
+  const admin = await app.signInAdmin();
+
+  const forced = await admin.b('PUT', `/api/crimguard/people/${user.id}/override`, { score: 99 });
+  assert.equal(forced.body.score, 99);
+  assert.equal(forced.body.limit.baseline, null);
+  assert.equal(forced.body.limit.tier, null, 'nothing to measure a cut against');
+  assert.equal(forced.body.limit.limited, false);
+});
+
+test('setting variables leaves the engine to score them, and stores what was set', async (t) => {
+  const app = await startWithRisk();
+  t.after(() => app.close());
+
+  const { b, user } = await app.signUp('Val');
+  await b('GET', '/api/projects');
+  await app.telemetry.flush();
+  const admin = await app.signInAdmin();
+  const url = `/api/crimguard/people/${user.id}/override`;
+
+  const set = await admin.b('PUT', url, {
+    features: { files_accessed_count: 400, bulk_directory_access_flag: true, daily_download_volume_mb: 250.5 },
+  });
+  assert.equal(set.status, 200, JSON.stringify(set.body));
+  assert.equal(set.body.forced, false, 'with no score given, the real engine runs');
+
+  const { variables } = (await admin.b('GET', `/api/crimguard/people/${user.id}/variables`)).body;
+  const byKey = Object.fromEntries(variables.map((feature) => [feature.key, feature.value]));
+  assert.equal(byKey.files_accessed_count, 400);
+  assert.equal(byKey.bulk_directory_access_flag, true);
+  assert.equal(byKey.daily_download_volume_mb, 250.5);
+
+  // Setting one variable leaves the others alone.
+  await admin.b('PUT', url, { features: { files_accessed_count: 7 } });
+  const after = Object.fromEntries((await admin.b('GET', `/api/crimguard/people/${user.id}/variables`)).body
+    .variables.map((feature) => [feature.key, feature.value]));
+  assert.equal(after.files_accessed_count, 7);
+  assert.equal(after.bulk_directory_access_flag, true, 'untouched variables survive');
+
+  // Clearing one sets it back to not collected.
+  await admin.b('PUT', url, { features: { bulk_directory_access_flag: null } });
+  const cleared = Object.fromEntries((await admin.b('GET', `/api/crimguard/people/${user.id}/variables`)).body
+    .variables.map((feature) => [feature.key, feature.value]));
+  assert.equal(cleared.bulk_directory_access_flag, null);
+});
+
+test('the override checks what it is given, and is admins only', async (t) => {
+  const app = await startWithRisk();
+  t.after(() => app.close());
+
+  const { b, user } = await app.signUp('Vic');
+  await b('GET', '/api/projects');
+  await app.telemetry.flush();
+  const admin = await app.signInAdmin();
+  const url = `/api/crimguard/people/${user.id}/override`;
+
+  assert.equal((await admin.b('PUT', url, { score: 500 })).status, 400);
+  assert.equal((await admin.b('PUT', url, { score: -1 })).status, 400);
+  assert.equal((await admin.b('PUT', url, { features: { not_a_variable: 1 } })).status, 400);
+  assert.equal((await admin.b('PUT', url, { features: { files_accessed_count: 'lots' } })).status, 400);
+  assert.equal((await admin.b('PUT', url, { features: { files_accessed_count: -4 } })).status, 400);
+  assert.equal((await admin.b('PUT', url, { features: { bulk_directory_access_flag: 'maybe' } })).status, 400);
+  assert.equal((await admin.b('PUT', url, { date: 'yesterday' })).status, 400);
+  assert.equal((await admin.b('PUT', '/api/crimguard/people/999999/override', { score: 50 })).status, 404);
+
+  // Not something an ordinary account can reach.
+  assert.equal((await b('PUT', url, { score: 0 })).status, 403);
+  assert.equal((await b('GET', `/api/crimguard/people/${user.id}/variables`)).status, 403);
+});
+
 // --- the website still works without the risk database ------------------------------------
 
 test('with no risk database attached, Red behaves exactly as before', async (t) => {

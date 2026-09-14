@@ -10,7 +10,11 @@
 // named.
 
 const { HttpError } = require('../http/errors');
+const { readJson } = require('../http/request');
 const { sendJson } = require('../http/response');
+const { isCeo, isPrivileged } = require('../security/access');
+const { singleLine } = require('../validation');
+const { isoDate } = require('./telemetry');
 
 const RECORD_VIEW_EVERY_MS = 10 * 60 * 1000;
 const RISK_CACHE_MS = 30 * 1000;
@@ -19,7 +23,7 @@ const ONLINE_MS = 5 * 60 * 1000;
 const ACTIVITY_LIMIT = 60;
 
 function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguard, sessionPolicy, now = Date.now }) {
-  const { people, files, audit } = stores;
+  const { people, files, audit, risk: riskState } = stores;
   const lastRecorded = new Map(); // `${viewerId}:${subject}` -> ms
   const riskCache = new Map(); // key -> { at, value }
 
@@ -161,7 +165,128 @@ function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguar
       sessions: liveSessions,
       activity: people.activity(id, ACTIVITY_LIMIT),
       risk: await riskFor(id),
+      limit: riskState.limitFor(id),
+      // Switching limiting off for an admin, or for yourself, is the CEO's call alone: an admin
+      // who could waive their own limit would make the whole thing optional.
+      canChangeLimit: isCeo(viewer.role) || (viewer.id !== id && !isPrivileged(person.role)),
     });
+  });
+
+  // The 100 variables as they stand for one person, for the test dialog to start from. Not part
+  // of the record itself: it would ride along on every poll for something opened now and then.
+  router.get('/api/crimguard/people/:id/variables', async ({ req, res, params: { id } }) => {
+    sessions.requireAdmin(req);
+    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    if (!people.person(id)) throw new HttpError(404, 'There is no account with that id.');
+
+    const report = await telemetry.report.forRedUser(id);
+    sendJson(res, 200, {
+      date: report ? report.date : null,
+      variables: report ? report.features : [],
+    });
+  });
+
+  // --- test overrides ---------------------------------------------------------------------
+  //
+  // TEMPORARY, and admin-only. Sets a person's variables for a day, or forces their score, so
+  // the thresholds that hang off it - limiting at 75 and 85, a decoy at 40 - can be exercised
+  // on demand. Both write ordinary rows in the ordinary tables; nothing here is a special case
+  // further down. It lives under /api/crimguard because a :id here is a Red account, as it is
+  // everywhere else on this dashboard.
+
+  // The catalog decides what a value may be, so a variable can't be set to something the
+  // snapshot tables would reject.
+  function featureValue(meta, raw) {
+    if (raw === null || raw === '') return null;
+    switch (meta.value_type) {
+      case 'flag':
+        if (typeof raw === 'boolean') return raw;
+        if (raw === 'true' || raw === 'false') return raw === 'true';
+        throw new HttpError(400, `${meta.feature_key} is a flag: true or false.`);
+      case 'count': case 'seconds': case 'months': {
+        const n = Number(raw);
+        if (!Number.isInteger(n) || n < 0) throw new HttpError(400, `${meta.feature_key} is a whole number, 0 or more.`);
+        return n;
+      }
+      case 'date':
+        return isoDate(raw, meta.feature_key);
+      case 'category':
+        if (typeof raw !== 'string' || raw.length > 40) throw new HttpError(400, `${meta.feature_key} must be a short word.`);
+        return raw;
+      default: {
+        const n = Number(raw);
+        if (!Number.isFinite(n)) throw new HttpError(400, `${meta.feature_key} must be a number.`);
+        return n;
+      }
+    }
+  }
+
+  router.put('/api/crimguard/people/:id/override', async ({ req, res, params: { id }, client }) => {
+    const admin = sessions.requireAdmin(req);
+    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    const body = await readJson(req);
+
+    // The id here is a Red account, the same as everywhere else in the admin console.
+    const person = people.person(id);
+    if (!person) throw new HttpError(404, 'There is no account with that id.');
+
+    const on = body.date ? isoDate(body.date, 'date') : new Date().toISOString().slice(0, 10);
+
+    let score = null;
+    if (body.score !== undefined && body.score !== null && body.score !== '') {
+      score = Number(body.score);
+      if (!Number.isFinite(score) || score < 0 || score > 100) throw new HttpError(400, 'Score must be between 0 and 100.');
+    }
+
+    const features = {};
+    if (body.features && typeof body.features === 'object') {
+      const { rows: catalog } = await crimguard.query('SELECT feature_key, value_type FROM feature_catalog');
+      const byKey = new Map(catalog.map((row) => [row.feature_key, row]));
+      for (const [key, raw] of Object.entries(body.features)) {
+        const meta = byKey.get(key);
+        if (!meta) throw new HttpError(400, `There is no variable called ${key}.`);
+        features[key] = featureValue(meta, raw);
+      }
+    }
+
+    const result = await telemetry.override(person, { date: on, features, score, level: body.level ?? null });
+    audit.record('risk.override', {
+      actor: admin, target: person, ...client,
+      details: { date: on, forced: result.forced, score: result.score, variables: Object.keys(features).length },
+    });
+    sendJson(res, 200, { ...result, limit: riskState.limitFor(id) });
+  });
+
+  // Turn risk limiting off for one person, or back on. The rule itself is not configurable here
+  // - only whether it applies to this account.
+  router.patch('/api/crimguard/people/:id/limit', async ({ req, res, params: { id }, client }) => {
+    const viewer = sessions.requireAdmin(req);
+    const person = people.person(id);
+    if (!person) throw new HttpError(404, 'There is no account with that id.');
+
+    const body = await readJson(req);
+    if (typeof body.enabled !== 'boolean') throw new HttpError(400, 'Say whether limiting should be on or off.');
+
+    if (!isCeo(viewer.role)) {
+      if (viewer.id === id) throw new HttpError(403, "You can't change your own limit. Ask the CEO.");
+      if (isPrivileged(person.role)) throw new HttpError(403, "Only the CEO can change an admin's limit.");
+    }
+
+    const reason = singleLine(body.reason || '').slice(0, 200);
+    if (body.enabled) {
+      riskState.unexempt(id);
+    } else {
+      riskState.exempt(id, { by: viewer, reason });
+    }
+    audit.record(body.enabled ? 'risk.limit_enabled' : 'risk.limit_disabled', {
+      actor: viewer, target: person, ...client, details: { reason: reason || undefined },
+    });
+    telemetry.onPrivilege({
+      actor: viewer, tokenHash: req.sessionTokenHash, client, type: 'permission_change',
+      targetRedUserId: id, systemName: 'risk-limit', details: { enabled: body.enabled },
+    });
+
+    sendJson(res, 200, { limit: riskState.limitFor(id) });
   });
 }
 

@@ -2,8 +2,12 @@
 
 (() => {
   const STATUS_LABELS = { planning: 'Planning', active: 'Active', done: 'Done' };
-  const ROLE_LABELS = { user: 'User', admin: 'Admin' };
+  // Mirrors src/security/access.js: file confidentiality and role clearance share this 1-5 scale.
+  const CONFIDENTIALITY = { 1: 'Open', 2: 'Internal', 3: 'Confidential', 4: 'Restricted', 5: 'Secret' };
+  const PRIVILEGED_ROLES = ['admin', 'ceo'];
   const AUTH_ENDPOINTS = ['/api/login', '/api/signup'];
+  // Pages that are signed in to through the admin login.
+  const CONSOLE_PAGES = ['admin', 'risk', 'crimguard'];
 
   // The static demo maps these server paths onto its own files; the real app uses them as they are.
   const route = (path) => (typeof window.RED_ROUTE === 'function' ? window.RED_ROUTE(path) : path);
@@ -30,8 +34,25 @@
 
   const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
   const people = (count) => (count === 1 ? '1 person' : `${count} people`);
-  // English picks the article by sound ("a user", "an admin"), so spell it out for the role words used here.
-  const withArticle = (word) => `${word === 'admin' ? 'an' : 'a'} ${word}`;
+  // English picks the article by sound. The built-in role names sound the way they are spelled ("an intern",
+  // "an employee", "an admin", "a CEO"), so the first letter is enough.
+  const withArticle = (word) => `${/^[aeio]/i.test(word) ? 'an' : 'a'} ${word}`;
+
+  // The roles, from /api/roles once someone is signed in. Until then a role shows as its name.
+  let roles = [];
+  const roleLabel = (name) => roles.find((role) => role.name === name)?.label || name;
+  const isPrivileged = (role) => PRIVILEGED_ROLES.includes(role);
+  // "an intern", "a CEO": labels are lowercased mid-sentence unless they are initials.
+  const roleNoun = (name) => {
+    const label = roleLabel(name);
+    return withArticle(label === label.toUpperCase() ? label : label.toLowerCase());
+  };
+
+  // "Not shared", "Shared with 1 role", "Shared with 2 roles and 1 person".
+  function sharingSummary({ shared_roles: roleCount = 0, shared_people: peopleCount = 0 }) {
+    const parts = [roleCount > 0 && plural(roleCount, 'role'), peopleCount > 0 && people(peopleCount)].filter(Boolean);
+    return parts.length ? `Shared with ${parts.join(' and ')}` : 'Not shared';
+  }
   const initials = (name) =>
     name.split(/\s+/).filter(Boolean).slice(0, 2).map((word) => [...word][0].toUpperCase()).join('') || '?';
 
@@ -67,8 +88,19 @@
 
   const statusOptions = (selected) =>
     Object.entries(STATUS_LABELS).map(([value, label]) => h('option', { value, selected: value === selected }, label));
-  const roleOptions = (selected) =>
-    Object.entries(ROLE_LABELS).map(([value, label]) => h('option', { value, selected: value === selected }, label));
+  // The roles someone may hand out: those at or below their own clearance. A role above that still shows
+  // when it is the current one, disabled, so the select reads correctly on a row like the CEO's.
+  const roleOptions = (selected, maxClearance = 5) =>
+    roles
+      .filter((role) => role.clearance <= maxClearance || role.name === selected)
+      .map((role) => h('option', { value: role.name, selected: role.name === selected, disabled: role.clearance > maxClearance }, role.label));
+
+  // Five rising bars filled up to a level, and its name: a file's confidentiality or a role's clearance.
+  function levelMeter(level, { text = CONFIDENTIALITY[level], showText = true } = {}) {
+    return h('span', { class: `level level-${level}`, title: `${CONFIDENTIALITY[level]}, level ${level} of 5` },
+      h('span', { class: 'level-bars', 'aria-hidden': 'true' }, [1, 2, 3, 4, 5].map((n) => h('span', { class: n <= level ? 'is-on' : null }))),
+      h('span', { class: showText ? 'level-text' : 'sr-only' }, text));
+  }
 
   let toastTimer;
   function toast(message, kind = 'ok') {
@@ -84,10 +116,10 @@
   async function failure(res, url) {
     const data = await res.json().catch(() => ({}));
     if (res.status === 401 && !AUTH_ENDPOINTS.includes(url)) {
-      go(document.body.dataset.page === 'admin' ? '/admin/login' : '/login');
+      go(CONSOLE_PAGES.includes(document.body.dataset.page) ? '/admin/login' : '/login');
     } else if (res.status === 403 && data.code === 'password_change_required') {
       location.reload(); // the page asks for a new password as it loads
-    } else if (res.status === 403 && url.startsWith('/api/admin/')) {
+    } else if (res.status === 403 && data.code === 'not_privileged') {
       go('/dashboard'); // this account's admin role was removed while the page was open
     }
     const error = new Error(data.error || `Something went wrong (${res.status}). Try again.`);
@@ -115,18 +147,18 @@
       },
     });
 
-  // Fetches the file and saves it under its own name. Works the same with the server and the static demo.
-  async function downloadFile(projectId, file) {
-    const url = `/api/projects/${projectId}/files/${file.id}/download`;
+  // Fetches a file and saves it under its own name. Works the same with the server and the static demo.
+  async function download(url, name) {
     const res = await fetch(url);
     if (!res.ok) throw await failure(res, url);
     const objectUrl = URL.createObjectURL(await res.blob());
-    const link = h('a', { href: objectUrl, download: file.name, hidden: true });
+    const link = h('a', { href: objectUrl, download: name, hidden: true });
     document.body.append(link);
     link.click();
     link.remove();
     setTimeout(() => URL.revokeObjectURL(objectUrl), 60000);
   }
+  const downloadFile = (projectId, file) => download(`/api/projects/${projectId}/files/${file.id}/download`, file.name);
 
   // ---- form building blocks -----------------------------------------------------
 
@@ -370,6 +402,16 @@
       await new Promise((resolve) => accountDialog(user, { forced: true, onDone: resolve }).open());
       user.mustChangePassword = false;
     }
+
+    // Read only once the password is sorted out: until then the API refuses everything else.
+    ({ roles } = await api('GET', '/api/roles'));
+    const badge = $('#role-badge');
+    if (badge) {
+      badge.textContent = roleLabel(user.role);
+      badge.classList.toggle('is-admin', isPrivileged(user.role));
+      badge.hidden = false;
+    }
+    $('#account-avatar').classList.toggle('is-admin', isPrivileged(user.role));
     return { me: user, account };
   }
 
@@ -382,7 +424,7 @@
 
   // ---- projects (the user dashboard and an admin's own projects) ------------------
 
-  function mountProjects(root) {
+  function mountProjects(root, me) {
     let projects = [];
     let filter = 'all';
     let loaded = false;
@@ -415,7 +457,7 @@
 
     const openNew = () => {
       editing = null;
-      dialog.open({ title: 'New project', note: 'Only you will be able to see it.', submitLabel: 'Create project' });
+      dialog.open({ title: 'New project', note: 'Only you, admins and the CEO can see your projects.', submitLabel: 'Create project' });
     };
     const openEdit = (project) => {
       editing = project;
@@ -429,6 +471,7 @@
     for (const button of document.querySelectorAll('[data-new-project]')) button.addEventListener('click', openNew);
 
     const drawer = projectDrawer({
+      me,
       onEdit: (project) => openEdit(projects.find((p) => p.id === project.id) || project),
       // File changes move a project to the top and change its file count, so reload the list.
       onFilesChanged: () =>
@@ -460,7 +503,7 @@
       if (!loaded) {
         surface.replaceChildren(h('div', { class: 'empty' }, h('p', {}, 'Loading projects…')));
       } else if (!projects.length) {
-        surface.replaceChildren(emptyState('No projects yet', 'Create a project to start tracking it. Only you will see it.', { label: 'New project', run: openNew }));
+        surface.replaceChildren(emptyState('No projects yet', 'Create a project to start tracking it, then add its files.', { label: 'New project', run: openNew }));
       } else {
         const shown = filter === 'all' ? projects : projects.filter((project) => project.status === filter);
         surface.replaceChildren(shown.length
@@ -526,7 +569,7 @@
     return dot > 0 && dot < name.length - 1 ? name.slice(dot + 1, dot + 5).toLowerCase() : 'file';
   }
 
-  function projectDrawer({ onEdit, onFilesChanged }) {
+  function projectDrawer({ me, onEdit, onFilesChanged }) {
     let project = null;
     let files = [];
     let loading = false;
@@ -537,6 +580,60 @@
     const busy = new Set();
     const errors = new Map();
     const uploads = [];
+    // Admins and the CEO choose who can see a file; everyone else sees what was chosen.
+    const access = isPrivileged(me.role) ? accessDialog(me) : null;
+
+    // Sharing the whole project with roles. Every file in it follows, later ones included,
+    // still bounded by each role's clearance.
+    let projectRoles = [];
+    let allRoles = [];
+    const shareSummary = h('span', { class: 'files-summary' });
+    const shareList = h('div', { class: 'share-roles' });
+
+    async function loadShare() {
+      if (!project) return;
+      try {
+        const data = await api('GET', `/api/projects/${project.id}/access`);
+        projectRoles = data.roles;
+        allRoles = data.available;
+      } catch {
+        projectRoles = [];
+        allRoles = [];
+      }
+      drawShare();
+    }
+
+    async function setShare(roleId, on) {
+      const next = on
+        ? [...projectRoles.map((role) => role.id), roleId]
+        : projectRoles.map((role) => role.id).filter((id) => id !== roleId);
+      try {
+        projectRoles = (await api('PUT', `/api/projects/${project.id}/access`, { roles: next })).roles;
+        toast(on ? 'Shared with that role' : 'No longer shared with that role');
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+      drawShare();
+    }
+
+    function drawShare() {
+      const names = projectRoles.map((role) => role.label || roleLabel(role.name));
+      shareSummary.textContent = names.length
+        ? `Shared with ${names.join(', ')}`
+        : 'Not shared with any role';
+      shareList.replaceChildren(...allRoles.map((role) => {
+        const on = projectRoles.some((granted) => granted.id === role.id);
+        const box = h('input', {
+          type: 'checkbox', id: uid('share-role'), checked: on || null,
+          onchange: () => setShare(role.id, box.checked),
+        });
+        return h('label', { class: 'share-role', for: box.id },
+          box,
+          h('span', {}, role.label || roleLabel(role.name)),
+          levelMeter(role.clearance),
+          h('span', { class: 'muted' }, `up to level ${role.clearance}`));
+      }));
+    }
 
     const titleEl = h('h2', { class: 'drawer-title', id: uid('drawer-title') });
     const meta = h('div', { class: 'drawer-meta' });
@@ -547,7 +644,7 @@
     const picker = h('input', { type: 'file', multiple: true, hidden: true });
     const replacePicker = h('input', { type: 'file', hidden: true });
     const dropzone = h('div', { class: 'dropzone' },
-      h('span', {}, 'Drag files here, or ', h('button', { class: 'link-button', type: 'button', onclick: () => picker.click() }, 'choose files')),
+      h('span', {}, 'Drag in as many files as you like, or ', h('button', { class: 'link-button', type: 'button', onclick: () => picker.click() }, 'choose several at once')),
       limitHint);
 
     const dialog = h('dialog', { class: 'drawer', 'aria-labelledby': titleEl.id },
@@ -559,12 +656,22 @@
       h('div', { class: 'drawer-body' },
         description,
         h('section', { class: 'files', 'aria-labelledby': uid('files-title') },
-          h('div', { class: 'files-head' }, h('h3', {}, 'Files'), summary),
+          h('div', { class: 'files-head' },
+            h('div', { class: 'files-title' }, h('h3', {}, 'Files'), summary),
+            h('button', { class: 'btn btn-secondary btn-sm', type: 'button', onclick: () => picker.click() }, 'Add files')),
           dropzone,
           list,
           picker,
-          replacePicker)));
+          replacePicker),
+        h('section', { class: 'share', 'aria-labelledby': uid('share-title') },
+          h('div', { class: 'files-head' },
+            h('div', { class: 'files-title' }, h('h3', {}, 'Share with a role'), shareSummary)),
+          h('p', { class: 'field-hint' },
+            "Everyone in a chosen role sees this project's files, including ones added later, "
+            + 'as far as their clearance reaches.'),
+          shareList)));
     dialog.querySelector('.files-head h3').id = dialog.querySelector('.files').getAttribute('aria-labelledby');
+    dialog.querySelector('.share .files-head h3').id = dialog.querySelector('.share').getAttribute('aria-labelledby');
     document.body.append(dialog);
 
     // The whole panel accepts dropped files, so a near miss doesn't open the file in the browser.
@@ -609,29 +716,47 @@
     const tooLarge = (file) => `${file.name} is ${formatBytes(file.size)}. Files can be up to ${formatBytes(maxFileBytes)}.`;
     const isShowing = (projectId) => project && project.id === projectId;
 
+    // Every chosen file is listed straight away, then sent one after another.
     async function upload(chosen) {
       if (!project) return;
       const projectId = project.id;
-      for (const file of chosen) {
-        if (file.size > maxFileBytes) {
-          toast(tooLarge(file), 'error');
-          continue;
-        }
-        const pending = { projectId, name: file.name, size: file.size };
-        uploads.push(pending);
+      const tooBig = chosen.filter((file) => file.size > maxFileBytes);
+      if (tooBig.length) toast(tooBig.length === 1 ? tooLarge(tooBig[0]) : `${plural(tooBig.length, 'file')} are over ${formatBytes(maxFileBytes)} and were skipped.`, 'error');
+      const queue = chosen
+        .filter((file) => file.size <= maxFileBytes)
+        .map((file) => ({ projectId, file, name: file.name, size: file.size, started: false }));
+      if (!queue.length) return;
+      uploads.push(...queue);
+      render();
+
+      let saved = 0;
+      let lastError = null;
+      for (const pending of queue) {
+        pending.started = true;
         render();
         try {
-          const { file: saved } = await sendFile('POST', `/api/projects/${projectId}/files`, file);
-          if (isShowing(projectId)) files = [saved, ...files];
-          toast(`Uploaded ${saved.name}`);
-          onFilesChanged();
+          const { file } = await sendFile('POST', `/api/projects/${projectId}/files`, pending.file);
+          if (isShowing(projectId)) files = [file, ...files];
+          saved += 1;
         } catch (err) {
-          toast(err.message, 'error');
+          lastError = err;
         } finally {
           uploads.splice(uploads.indexOf(pending), 1);
           render();
         }
       }
+
+      if (saved) onFilesChanged();
+      if (!lastError) toast(saved === 1 ? `Uploaded ${queue[0].name}` : `Uploaded ${saved} files`);
+      else if (queue.length === 1) toast(lastError.message, 'error');
+      else toast(`Uploaded ${saved} of ${queue.length} files. ${lastError.message}`, 'error');
+    }
+
+    function updateAccess(fileId, saved) {
+      files = files.map((file) => (file.id === fileId
+        ? { ...file, confidentiality: saved.file.confidentiality, shared_roles: saved.roles.length, shared_people: saved.people.length }
+        : file));
+      render();
     }
 
     async function withBusy(file, work) {
@@ -728,12 +853,15 @@
 
       const action = (label, ariaLabel, onclick, extra = '') =>
         h('button', { class: `btn btn-quiet btn-sm${extra}`, type: 'button', disabled: isBusy, 'aria-label': ariaLabel, onclick }, label);
+      const canManageAccess = access && file.confidentiality <= me.clearance;
       return h('li', { class: isBusy ? 'file-row is-busy' : 'file-row', 'aria-busy': isBusy ? 'true' : null },
         badge,
         h('div', { class: 'file-main' },
           h('p', { class: 'file-name', title: file.name }, file.name),
-          h('p', { class: 'file-meta' }, `${formatBytes(file.size)}, updated ${formatDate(file.updated_at)}`)),
+          h('p', { class: 'file-meta' }, `${formatBytes(file.size)}, updated ${formatDate(file.updated_at)}`),
+          h('p', { class: 'file-access' }, levelMeter(file.confidentiality), h('span', {}, sharingSummary(file)))),
         h('div', { class: 'file-actions' },
+          canManageAccess && action('Access', `Choose who can see ${file.name}`, () => access.open(file, (saved) => updateAccess(file.id, saved))),
           action('Download', `Download ${file.name}`, () => downloadFile(project.id, file).catch((err) => toast(err.message, 'error'))),
           action('Rename', `Rename ${file.name}`, () => {
             renamingId = file.id;
@@ -760,7 +888,7 @@
             h('span', { class: 'file-badge', 'aria-hidden': 'true' }, extensionOf(pending.name)),
             h('div', { class: 'file-main' },
               h('p', { class: 'file-name', title: pending.name }, pending.name),
-              h('p', { class: 'file-meta' }, `Uploading ${formatBytes(pending.size)}…`)))),
+              h('p', { class: 'file-meta' }, pending.started ? `Uploading ${formatBytes(pending.size)}…` : `Waiting to upload, ${formatBytes(pending.size)}`)))),
         ...files.map(fileRow),
       ];
       list.replaceChildren(...(rows.length ? [h('ul', { class: 'file-list' }, rows)] : []));
@@ -773,9 +901,13 @@
         renamingId = null;
         errors.clear();
         loading = true;
+        projectRoles = [];
+        drawShare();
         renderProject();
         render();
         if (!dialog.open) dialog.showModal();
+        // Who the project is shared with loads alongside its files.
+        loadShare().catch(() => {});
         try {
           const data = await api('GET', `/api/projects/${next.id}/files`);
           if (!isShowing(next.id)) return;
@@ -804,14 +936,212 @@
     };
   }
 
-  function mountPeople(me, account) {
+  // ---- who can see a file (admins and the CEO) --------------------------------------------
+
+  // One file's confidentiality, and the roles and people it is shared with. The server applies the same
+  // limits; this only avoids offering choices it would refuse.
+  function accessDialog(me) {
+    let current = null;
+    let directory = null; // everyone with an account, loaded the first time the dialog opens
+
+    const levels = h('div', { class: 'level-picker' });
+    const roleList = h('div', { class: 'check-list' });
+    const search = h('input', { class: 'search', id: uid('access-search'), type: 'search', placeholder: 'Search by name or email', 'aria-label': 'Search people', autocomplete: 'off' });
+    const peopleList = h('div', { class: 'check-list check-list-scroll' });
+    const outcome = h('p', { class: 'access-outcome', 'aria-live': 'polite' });
+
+    const dialog = formDialog({
+      title: 'Who can see this file',
+      submitLabel: 'Save access',
+      fields: [
+        h('fieldset', { class: 'fieldset' }, h('legend', { class: 'field-label' }, 'Confidentiality'), levels),
+        h('fieldset', { class: 'fieldset' },
+          h('legend', { class: 'field-label' }, 'Share with roles'),
+          h('p', { class: 'field-hint' }, "Everyone in a role can open the file while the role's clearance covers its confidentiality."),
+          roleList),
+        h('fieldset', { class: 'fieldset' },
+          h('legend', { class: 'field-label' }, 'Share with people'),
+          h('p', { class: 'field-hint' }, 'People you pick can open it at any confidentiality.'),
+          search,
+          peopleList),
+        outcome,
+      ],
+      async onSubmit(form) {
+        const data = new FormData(form);
+        const saved = await api('PUT', `/api/files/${current.file.id}/access`, {
+          confidentiality: Number(data.get('confidentiality')),
+          roles: data.getAll('role').map(Number),
+          people: data.getAll('person').map(Number),
+        });
+        toast(`Saved who can see ${saved.file.name}`);
+        if (current.onSaved) current.onSaved(saved);
+      },
+    });
+    const form = levels.closest('form');
+    form.closest('dialog').classList.add('dialog-wide');
+    form.addEventListener('change', refresh);
+    search.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') event.preventDefault(); // searching, not saving
+    });
+    search.addEventListener('input', () => {
+      const term = search.value.trim().toLowerCase();
+      for (const row of peopleList.children) row.hidden = Boolean(term) && !row.dataset.search.includes(term);
+    });
+
+    function checkRow({ name, value, checked, title, meta, extra = {} }) {
+      const id = uid(name);
+      return h('label', { class: 'check-row', for: id, ...extra },
+        h('input', { type: 'checkbox', id, name, value, checked }),
+        h('span', { class: 'check-main' }, h('span', { class: 'check-title' }, title), h('span', { class: 'check-meta' }, meta)),
+        h('span', { class: 'check-note' }));
+    }
+
+    function render(access) {
+      const level = access.file.confidentiality;
+      levels.replaceChildren(...[1, 2, 3, 4, 5].map((n) => {
+        const id = uid('level');
+        const locked = n > me.clearance;
+        return h('label', { class: 'level-option', for: id, title: locked ? `Only the CEO can mark a file ${CONFIDENTIALITY[n]}` : null },
+          h('input', { type: 'radio', id, name: 'confidentiality', value: n, checked: n === level, disabled: locked, required: true }),
+          h('span', { class: 'level-option-body' }, levelMeter(n, { showText: false }), h('span', {}, CONFIDENTIALITY[n])));
+      }));
+
+      // Admins and the CEO see files by their own clearance, so sharing with those roles would change nothing.
+      const grantedRoles = new Set(access.roles.map((role) => role.id));
+      roleList.replaceChildren(...roles.filter((role) => !isPrivileged(role.name)).map((role) => checkRow({
+        name: 'role',
+        value: role.id,
+        checked: grantedRoles.has(role.id),
+        title: role.label,
+        meta: `Clearance ${role.clearance}, ${people(role.member_count || 0)}`,
+        extra: { 'data-clearance': role.clearance },
+      })));
+
+      const grantedPeople = new Set(access.people.map((person) => person.id));
+      const candidates = directory
+        .filter((person) => person.id !== access.file.owner.id)
+        .sort((a, b) => Number(grantedPeople.has(b.id)) - Number(grantedPeople.has(a.id)) || a.name.localeCompare(b.name));
+      peopleList.replaceChildren(...candidates.map((person) => checkRow({
+        name: 'person',
+        value: person.id,
+        checked: grantedPeople.has(person.id),
+        title: person.name,
+        meta: `${person.email}, ${roleLabel(person.role)}`,
+        extra: { 'data-search': `${person.name} ${person.email}`.toLowerCase() },
+      })));
+    }
+
+    // Flags roles that can't open the file at the chosen level, and says what saving will do.
+    function refresh() {
+      const level = Number(new FormData(form).get('confidentiality'));
+      let roleCount = 0;
+      for (const row of roleList.children) {
+        const checked = row.querySelector('input').checked;
+        const blocked = checked && Number(row.dataset.clearance) < level;
+        row.classList.toggle('is-blocked', blocked);
+        row.querySelector('.check-note').textContent = blocked ? `Can't open ${CONFIDENTIALITY[level]} files` : '';
+        if (checked) roleCount += 1;
+      }
+      const personCount = peopleList.querySelectorAll('input:checked').length;
+      const always = level <= 4 ? 'its owner, admins and the CEO' : 'its owner and the CEO';
+      outcome.textContent = `${sharingSummary({ shared_roles: roleCount, shared_people: personCount })}. Besides that, ${always} can always open it.`;
+    }
+
+    return {
+      async open(file, onSaved) {
+        try {
+          const [access, everyone] = await Promise.all([
+            api('GET', `/api/files/${file.id}/access`),
+            directory || api('GET', '/api/admin/users').then((data) => data.users),
+          ]);
+          directory = everyone;
+          current = { file: access.file, onSaved };
+          render(access);
+          dialog.open({
+            title: `Who can see ${access.file.name}`,
+            note: `In ${access.file.owner.name}'s project ${access.file.project.name}.`,
+          });
+          refresh();
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      },
+    };
+  }
+
+  // ---- files shared with you --------------------------------------------------------------
+
+  function mountShared(root, me) {
+    let files = [];
+    let loaded = false;
+    const surface = h('div', { class: 'surface table-wrap' });
+    root.replaceChildren(surface);
+
+    const th = (label, className) => h('th', { scope: 'col', class: className || null }, label);
+
+    function render() {
+      if (!loaded) {
+        surface.replaceChildren(h('div', { class: 'empty' }, h('p', {}, 'Loading shared files…')));
+        return;
+      }
+      if (!files.length) {
+        surface.replaceChildren(emptyState('Nothing shared with you yet', 'When an admin or the CEO shares a file with you or your role, it shows up here.'));
+        return;
+      }
+      surface.replaceChildren(h('table', { class: 'table' },
+        h('thead', {}, h('tr', {},
+          th('File'), th('Confidentiality'), th('From'), th('Shared with'), th('Size', 'num'), th('Updated'),
+          th(h('span', { class: 'sr-only' }, 'Actions')))),
+        h('tbody', {}, files.map((file) => h('tr', {},
+          h('td', {}, h('div', { class: 'shared-file' },
+            h('span', { class: 'file-badge', 'aria-hidden': 'true' }, extensionOf(file.name)),
+            h('span', { class: 'shared-name', title: file.name }, file.name))),
+          h('td', {}, levelMeter(file.confidentiality)),
+          h('td', { class: 'wrap' }, h('div', { class: 'person-text' },
+            h('span', {}, file.owner_name),
+            h('span', { class: 'person-email' }, file.project_name))),
+          h('td', { class: 'muted' }, file.by_name ? 'You' : `Everyone who is ${roleNoun(me.role)}`),
+          h('td', { class: 'num' }, formatBytes(file.size)),
+          h('td', { class: 'date' }, formatDate(file.updated_at)),
+          h('td', {}, h('div', { class: 'row-actions' },
+            h('button', {
+              class: 'btn btn-secondary btn-sm',
+              type: 'button',
+              'aria-label': `Download ${file.name}`,
+              onclick: () => download(`/api/files/${file.id}/download`, file.name).catch((err) => toast(err.message, 'error')),
+            }, 'Download'))))))));
+    }
+
+    async function load() {
+      try {
+        ({ files } = await api('GET', '/api/files/shared'));
+        loaded = true;
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+      render();
+    }
+
+    render();
+    return { load };
+  }
+
+  // ---- people & roles (admins and the CEO) ------------------------------------------------
+
+  function mountPeople(me, account, onChange = () => {}) {
     const rows = $('#user-rows');
     const summary = $('#people-summary');
     const search = $('#user-search');
     const roleFilter = $('#role-filter');
     let users = [];
+    let loaded = false;
     let role = 'all';
     let resetTarget = null;
+    // Anyone up to your own clearance: admins manage admins and below, and only the CEO reaches a CEO.
+    const canManage = (user) => user.clearance <= me.clearance;
+    const addRole = h('select', { id: uid('person-role'), name: 'role' });
+    const filterButton = (value, label, count) =>
+      h('button', { type: 'button', 'data-role': value, 'aria-pressed': String(value === role) }, label, h('span', { class: 'count' }, String(count)));
 
     const addDialog = formDialog({
       title: 'Add a person',
@@ -822,12 +1152,13 @@
         field('Email', h('input', { id: uid('person-email'), name: 'email', type: 'email', autocomplete: 'off', required: true })),
         h('div', { class: 'field-pair' },
           passwordField('Password', 'password', { hint: 'At least 12 characters.' }),
-          field('Role', h('select', { id: uid('person-role'), name: 'role' }, roleOptions('user')))),
+          field('Role', addRole)),
       ],
       async onSubmit(form) {
         const { user } = await api('POST', '/api/admin/users', Object.fromEntries(new FormData(form)));
-        toast(`Added ${user.name} as ${withArticle(ROLE_LABELS[user.role].toLowerCase())}`);
+        toast(`Added ${user.name} as ${roleNoun(user.role)}`);
         await load();
+        onChange();
       },
     });
 
@@ -842,18 +1173,22 @@
       },
     });
 
-    $('#add-person').addEventListener('click', () => addDialog.open());
+    $('#add-person').addEventListener('click', () => {
+      addRole.replaceChildren(...roleOptions('employee', me.clearance));
+      addDialog.open();
+    });
     search.addEventListener('input', render);
-    for (const button of roleFilter.querySelectorAll('button')) {
-      button.addEventListener('click', () => {
-        role = button.dataset.role;
-        render();
-      });
-    }
+    roleFilter.addEventListener('click', (event) => {
+      const button = event.target.closest('button[data-role]');
+      if (!button) return;
+      role = button.dataset.role;
+      render();
+    });
 
     async function load() {
       try {
         ({ users } = await api('GET', '/api/admin/users'));
+        loaded = true;
         render();
       } catch (err) {
         toast(err.message, 'error');
@@ -861,13 +1196,19 @@
     }
 
     function render() {
-      const admins = users.filter((user) => user.role === 'admin').length;
-      summary.textContent = `${people(users.length)}, ${plural(admins, 'admin')}`;
-      const counts = { all: users.length, admin: admins, user: users.length - admins };
-      for (const button of roleFilter.querySelectorAll('button')) {
-        button.setAttribute('aria-pressed', String(button.dataset.role === role));
-        button.querySelector('.count').textContent = counts[button.dataset.role];
-      }
+      if (!loaded) return;
+      const withConsole = users.filter((user) => isPrivileged(user.role)).length;
+      summary.textContent = `${people(users.length)}, ${withConsole} with the admin console`;
+
+      // One filter for each role someone holds, highest clearance first. Rebuilt, so focus is put back.
+      const counts = new Map();
+      for (const user of users) counts.set(user.role, (counts.get(user.role) || 0) + 1);
+      if (role !== 'all' && !counts.has(role)) role = 'all';
+      const focused = roleFilter.contains(document.activeElement) ? document.activeElement.dataset.role : null;
+      roleFilter.replaceChildren(
+        filterButton('all', 'All', users.length),
+        ...roles.filter((r) => counts.has(r.name)).reverse().map((r) => filterButton(r.name, r.label, counts.get(r.name))));
+      if (focused) roleFilter.querySelector(`[data-role="${CSS.escape(focused)}"]`)?.focus();
 
       const term = search.value.trim().toLowerCase();
       const shown = users.filter((user) =>
@@ -880,23 +1221,24 @@
       }
       const empty = term
         ? emptyState('No one matches that search', 'Check the spelling, or search by email instead.')
-        : emptyState(`No ${role === 'admin' ? 'admins' : 'users'} yet`, 'Change someone\'s role from the All view, or add a person.');
+        : emptyState(role === 'all' ? 'No people yet' : `Nobody is ${roleNoun(role)}`, "Change someone's role from the All view, or add a person.");
       rows.replaceChildren(h('tr', {}, h('td', { colspan: 6 }, empty)));
     }
 
     function row(user) {
       const isMe = user.id === me.id;
+      const locked = !isMe && !canManage(user);
       const select = h('select', {
         class: 'role-select',
         'aria-label': `Role for ${user.name}`,
-        title: isMe ? "You can't change your own role" : null,
-        disabled: isMe,
-      }, roleOptions(user.role));
+        title: isMe ? "You can't change your own role" : locked ? 'Only the CEO can change this account' : null,
+        disabled: isMe || locked,
+      }, roleOptions(user.role, me.clearance));
       select.addEventListener('change', () => changeRole(user, select.value));
 
       return h('tr', {},
         h('td', {}, h('div', { class: 'person' },
-          h('span', { class: user.role === 'admin' ? 'avatar is-admin' : 'avatar', 'aria-hidden': 'true' }, initials(user.name)),
+          h('span', { class: isPrivileged(user.role) ? 'avatar is-admin' : 'avatar', 'aria-hidden': 'true' }, initials(user.name)),
           h('div', { class: 'person-text' },
             h('span', { class: 'person-name' }, user.name, isMe && h('span', { class: 'you' }, '(you)')),
             h('span', { class: 'person-email' }, user.email)))),
@@ -906,10 +1248,11 @@
         h('td', { class: 'date' }, user.last_login_at ? formatDate(user.last_login_at) : 'Never'),
         h('td', {}, h('div', { class: 'row-actions' },
           // Your own password goes through the account dialog, which asks for your current password.
-          h('button', { class: 'btn btn-quiet btn-sm', type: 'button', onclick: () => (isMe ? account.open() : openReset(user)) },
+          !locked && h('button', { class: 'btn btn-quiet btn-sm', type: 'button', onclick: () => (isMe ? account.open() : openReset(user)) },
             isMe ? 'Change password' : 'Reset password'),
           // No delete on your own row: the server refuses it so an admin always remains.
-          !isMe && h('button', { class: 'btn btn-quiet btn-danger btn-sm', type: 'button', 'aria-label': `Delete ${user.name}`, onclick: () => removeUser(user) }, 'Delete'))));
+          !isMe && !locked && h('button', { class: 'btn btn-quiet btn-danger btn-sm', type: 'button', 'aria-label': `Delete ${user.name}`, onclick: () => removeUser(user) }, 'Delete'),
+          locked && h('span', { class: 'muted row-note' }, 'Managed by the CEO'))));
     }
 
     function openReset(user) {
@@ -922,9 +1265,10 @@
 
     async function changeRole(user, nextRole) {
       try {
-        await api('PATCH', `/api/admin/users/${user.id}/role`, { role: nextRole });
-        user.role = nextRole;
-        toast(`${user.name} is now ${withArticle(ROLE_LABELS[nextRole].toLowerCase())}`);
+        const { user: saved } = await api('PATCH', `/api/admin/users/${user.id}/role`, { role: nextRole });
+        Object.assign(user, { role: saved.role, clearance: saved.clearance });
+        toast(`${user.name} is now ${roleNoun(nextRole)}`);
+        onChange();
       } catch (err) {
         toast(err.message, 'error');
       }
@@ -939,9 +1283,99 @@
         users = users.filter((u) => u.id !== user.id);
         render();
         toast(`Deleted ${user.name}`);
+        onChange();
       } catch (err) {
         toast(err.message, 'error');
       }
+    }
+
+    return { load, render };
+  }
+
+  // ---- roles (the console reads them; only the CEO changes them) ---------------------------
+
+  function mountRoles(me, onChange) {
+    const rows = $('#role-rows');
+    const note = $('#roles-note');
+    const addButton = $('#add-role');
+    const isCeo = me.role === 'ceo';
+    let editing = null;
+
+    const clearance = h('select', { id: uid('role-clearance'), name: 'clearance' },
+      [1, 2, 3, 4, 5].map((level) => h('option', { value: level, selected: level === 2 }, `${level}, can be given ${CONFIDENTIALITY[level]} files`)));
+    const dialog = formDialog({
+      title: 'New role',
+      submitLabel: 'Create role',
+      fields: [
+        field('Name', h('input', { id: uid('role-label'), name: 'label', maxlength: 40, autocomplete: 'off', required: true, placeholder: 'Contractors' })),
+        field('Clearance', clearance, { hint: 'The most confidential file people in this role can be given. Employees are 2, admins 4 and the CEO 5.' }),
+      ],
+      async onSubmit(form) {
+        const body = { label: form.elements.label.value, clearance: Number(clearance.value) };
+        const { role } = editing
+          ? await api('PATCH', `/api/admin/roles/${editing.id}`, body)
+          : await api('POST', '/api/admin/roles', body);
+        toast(editing ? `Saved the ${role.label} role` : `Created the ${role.label} role`);
+        await load();
+      },
+    });
+
+    addButton.hidden = !isCeo;
+    addButton.addEventListener('click', () => {
+      editing = null;
+      dialog.open({
+        title: 'New role',
+        note: 'Everyone in a role can open files shared with it, up to its clearance. Roles you add never get the admin console.',
+        submitLabel: 'Create role',
+        values: { clearance: '2' },
+      });
+    });
+
+    function openEdit(role) {
+      editing = role;
+      dialog.open({
+        title: `Edit ${role.label}`,
+        note: `Changing the clearance changes which shared files the ${people(role.member_count || 0)} in this role can open.`,
+        submitLabel: 'Save role',
+        values: { label: role.label, clearance: String(role.clearance) },
+      });
+    }
+
+    async function remove(role) {
+      if (!confirm(`Delete the ${role.label} role?\n\nFiles shared with it stop being shared through it.`)) return;
+      try {
+        await api('DELETE', `/api/admin/roles/${role.id}`);
+        toast(`Deleted the ${role.label} role`);
+        await load();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    }
+
+    async function load() {
+      try {
+        ({ roles } = await api('GET', '/api/roles'));
+        render();
+        onChange();
+      } catch (err) {
+        toast(err.message, 'error');
+      }
+    }
+
+    function render() {
+      const added = roles.filter((role) => !role.built_in).length;
+      note.textContent = `${plural(roles.length, 'role')}${added ? `, ${added} added by the CEO` : ''}. `
+        + (isCeo ? "Clearance is the most confidential file a role can be given. Built-in roles can't be changed." : 'Only the CEO can add or change roles.');
+      rows.replaceChildren(...roles.slice().reverse().map((role) => h('tr', {},
+        h('td', {}, h('div', { class: 'role-name' },
+          h('span', { class: 'person-name' }, role.label),
+          role.built_in && h('span', { class: 'tag' }, 'Built in'))),
+        h('td', {}, levelMeter(role.clearance, { text: `${role.clearance}, up to ${CONFIDENTIALITY[role.clearance]}` })),
+        h('td', { class: 'num' }, String(role.member_count ?? 0)),
+        h('td', { class: 'muted' }, isPrivileged(role.name) ? 'Admin console and CrimGuard' : 'Their own projects, and files shared with them'),
+        h('td', {}, h('div', { class: 'row-actions' },
+          isCeo && !role.built_in && h('button', { class: 'btn btn-quiet btn-sm', type: 'button', 'aria-label': `Edit ${role.label}`, onclick: () => openEdit(role) }, 'Edit'),
+          isCeo && !role.built_in && h('button', { class: 'btn btn-quiet btn-danger btn-sm', type: 'button', 'aria-label': `Delete ${role.label}`, onclick: () => remove(role) }, 'Delete'))))));
     }
 
     return { load };
@@ -959,10 +1393,17 @@
     'password.changed': () => ['Changed their password', 'idle'],
     'password.change_failed': () => ['Entered a wrong current password', 'alert'],
     'profile.updated': () => ['Updated their profile', 'idle'],
-    'admin.user_created': (e) => [`Added as ${withArticle(e.details.role || 'user')}`, 'warn'],
-    'admin.role_changed': (e) => [`Role changed from ${ROLE_LABELS[e.details.from] || e.details.from} to ${ROLE_LABELS[e.details.to] || e.details.to}`, 'warn'],
+    'admin.user_created': (e) => [`Added as ${roleNoun(e.details.role || 'intern')}`, 'warn'],
+    'admin.role_changed': (e) => [`Role changed from ${roleLabel(e.details.from)} to ${roleLabel(e.details.to)}`, 'warn'],
     'admin.password_reset': () => ['Password reset by an admin', 'warn'],
     'admin.user_deleted': () => ['Account deleted', 'alert'],
+    'admin.role_created': (e) => [`Created the ${e.details.label} role, clearance ${e.details.clearance}`, 'warn'],
+    'admin.role_updated': (e) => [`Changed the ${e.details.to.label} role to clearance ${e.details.to.clearance}`, 'warn'],
+    'admin.role_deleted': (e) => [`Deleted the ${e.details.label} role`, 'warn'],
+    'file.access_changed': (e) => [`Access to one of their files changed, now ${CONFIDENTIALITY[e.details.confidentiality.to]}`, 'warn'],
+    'file.downloaded': () => ['One of their files was downloaded', 'idle'],
+    'crimguard.person_viewed': () => ['Record opened in CrimGuard', 'idle'],
+    'security.honeytoken_tripped': () => ['Changed a decoy project and was signed out', 'alert'],
   };
   const describe = (event) => (ACTIVITY[event.action] ? ACTIVITY[event.action](event) : [event.action, 'idle']);
   const needsAttention = (event) => ['alert', 'warn'].includes(describe(event)[1]);
@@ -1031,7 +1472,7 @@
       const [label, level] = describe(event);
       return h('tr', {},
         h('td', {}, h('span', { class: `status event status-${level}` }, label)),
-        h('td', { class: 'wrap' }, event.target_email || h('span', { class: 'muted' }, 'Unknown account')),
+        h('td', { class: 'wrap' }, event.target_email || h('span', { class: 'muted' }, event.action.startsWith('admin.role_') ? 'Roles' : 'Unknown account')),
         h('td', { class: 'wrap' }, doneBy(event)),
         h('td', { class: 'date' }, event.ip || ''),
         h('td', { class: 'date' }, h('time', { datetime: parseSqlDate(event.occurred_at).toISOString() }, formatDateTime(event.occurred_at))));
@@ -1040,15 +1481,16 @@
     return { load: () => fetchPage(null) };
   }
 
-  // Admin console sections live on one page: #projects, #people and #activity.
+  // Pages with sections (the admin console; a user's projects and shared files) keep each one in a panel
+  // named by its tab, so #people or #shared opens that section.
   function initSections(onShow) {
     const links = [...document.querySelectorAll('[data-tab]')];
     const panels = [...document.querySelectorAll('[data-panel]')];
-    const titles = { projects: 'My projects', people: 'People & roles', activity: 'Activity' };
+    const titles = Object.fromEntries(links.map((link) => [link.dataset.tab, link.textContent.trim()]));
 
     function show() {
       const requested = location.hash.slice(1);
-      const name = Object.hasOwn(titles, requested) ? requested : 'projects';
+      const name = Object.hasOwn(titles, requested) ? requested : links[0].dataset.tab;
       for (const link of links) {
         if (link.dataset.tab === name) link.setAttribute('aria-current', 'page');
         else link.removeAttribute('aria-current');
@@ -1068,16 +1510,24 @@
     login: () => initAuthForm($('#auth-form'), '/api/login', { portal: document.body.dataset.portal }),
     signup: () => initAuthForm($('#auth-form'), '/api/signup'),
     async dashboard() {
-      await initShell();
-      mountProjects($('#projects'));
+      const { me } = await initShell();
+      mountProjects($('#projects'), me);
+      const shared = mountShared($('#shared'), me);
+      initSections((name) => {
+        if (name === 'shared') shared.load();
+      });
     },
     async admin() {
       const { me, account } = await initShell();
-      mountProjects($('#projects'));
-      const peopleSection = mountPeople(me, account);
+      mountProjects($('#projects'), me);
+      const rolesSection = mountRoles(me, () => peopleSection.render());
+      const peopleSection = mountPeople(me, account, () => rolesSection.load());
       const activitySection = mountActivity();
       initSections((name) => {
-        if (name === 'people') peopleSection.load();
+        if (name === 'people') {
+          peopleSection.load();
+          rolesSection.load();
+        }
         if (name === 'activity') activitySection.load();
       });
     },
@@ -1085,7 +1535,20 @@
     async risk() {
       await initShell();
     },
+    // So does CrimGuard, which crimguard.js draws once the shell is ready.
+    async crimguard() {
+      resolveShell(await initShell());
+    },
   };
+
+  // The building blocks crimguard.js draws the CrimGuard dashboard with.
+  let resolveShell;
+  window.RedUI = Object.freeze({
+    h, api, toast, download, emptyState, levelMeter, sharingSummary, roleLabel, isPrivileged, describe, accessDialog,
+    formatBytes, formatDate, formatDateTime, parseSqlDate, initials, plural, people,
+    CONFIDENTIALITY, STATUS_LABELS,
+    shell: new Promise((resolve) => { resolveShell = resolve; }),
+  });
 
   initReveal();
   const init = pages[document.body.dataset.page];

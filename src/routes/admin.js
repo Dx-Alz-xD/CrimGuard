@@ -69,7 +69,7 @@ function registerAdminRoutes(router, { stores, sessions, passwords, telemetry })
     const body = await readJson(req);
     const role = assignableRole(admin, body.role);
     // The admin knows this password, so the person must replace it when they first sign in.
-    const user = await createAccount({ users, passwords }, body, { role: role.name, mustChangePassword: true });
+    const user = await createAccount({ ...stores, passwords }, body, { role: role.name, mustChangePassword: true, actor: admin, client });
     audit.record('admin.user_created', { actor: admin, target: user, ...client, details: { role: role.name } });
     telemetry.onAccountCreated({ actor: admin, tokenHash: req.sessionTokenHash, client, created: user });
     sendJson(res, 201, { user });

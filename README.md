@@ -364,6 +364,49 @@ strong evidence. The noisy case calibrates itself away.
 A VPN never fires `impossible_travel_flag`, because it moves the address without moving the
 browser's time zone, and distance is what that check is made of.
 
+### Risk limiting
+
+A high score narrows what an account can reach, without anyone having to act. The baseline is
+the average confidentiality of every file in Red, rounded down:
+
+| Score | Clearance is capped at | With a level-3 average |
+| --- | --- | --- |
+| 75 and over | one level below the average | held to 2 |
+| 85 and over | two levels below | held to 1 |
+
+Only **clearance** is cut, which is what the two blanket rules in `db/files.js` run on: an
+admin's reach over everything at or below their level, and a file shared with a whole role.
+Owning a file, and having one shared with you **by name**, are not clearance decisions and are
+left alone — the point is to narrow how wide someone's reach is, not to lock them out of their
+own work mid-sentence.
+
+The cap is applied inside the `person()` CTE in `db/files.js`, so every list, download and
+dialog inherits it from the one place the visibility rule is written. The thresholds live in
+`src/security/limits.js` and nowhere else.
+
+An admin sees it on that person's CrimGuard record and can switch it off for them, with a
+reason. Two exceptions, so the control can't be quietly voided: **an admin cannot waive their
+own limit, nor another admin's.** Both are the CEO's call, the same way admins can't change
+their own role.
+
+Scores are computed in the CrimGuard database but access is decided in SQL against `red.db`, so
+each score is copied into `user_risk_state` as it is produced.
+
+### Starting access
+
+Two ways access arrives without anyone granting it file by file.
+
+**A project shared with a role.** Everyone in that role sees its files, including ones uploaded
+later, as far as their clearance reaches — sharing a project with the interns does not hand
+them a Secret file inside it. Set from the project drawer; the owner decides.
+
+**A new account provisioned from its peers.** A new intern should not begin with nothing. Red
+looks at the people who already hold that role, counts the files each was given by name, and
+hands the newcomer that many — taking the ones the most role-mates already have, most-shared
+first. Bounded twice over: never above the role's clearance, and never at all when there are no
+peers to copy. Role and project grants aren't copied, because those already apply to the whole
+role the moment it is set.
+
 ### Decoys
 
 Once an account's score reaches **40**, a fake project appears in its list, named like the
