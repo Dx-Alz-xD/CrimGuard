@@ -9,18 +9,21 @@
 // the page open doesn't flood the activity log. Files above the viewer's clearance are counted, never
 // named.
 
-const { HttpError } = require('../http/errors');
+const { HttpError, riskDatabaseMissing } = require('../http/errors');
 const { readJson } = require('../http/request');
 const { sendJson } = require('../http/response');
 const { isCeo, isPrivileged } = require('../security/access');
-const { singleLine } = require('../validation');
-const { isoDate } = require('./telemetry');
+const { effectiveScore } = require('../security/risk-signals');
+const { PARAMS: { levels: LEVELS } } = require('../../crimguard/risk/params');
+const { dateField, singleLine } = require('../validation');
 
 const RECORD_VIEW_EVERY_MS = 10 * 60 * 1000;
 const RISK_CACHE_MS = 30 * 1000;
 // Sessions are touched at most once a minute, so "online" allows a few minutes of quiet.
 const ONLINE_MS = 5 * 60 * 1000;
 const ACTIVITY_LIMIT = 60;
+
+const levelFor = (score) => (score >= LEVELS.critical ? 'critical' : score >= LEVELS.high ? 'high' : score >= LEVELS.medium ? 'medium' : 'low');
 
 function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguard, sessionPolicy, now = Date.now }) {
   const { people, files, audit, risk: riskState } = stores;
@@ -48,6 +51,17 @@ function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguar
     const value = await load().catch(() => null);
     riskCache.set(key, { at: t, value });
     return value;
+  }
+
+  // The engine's score with the live adjustments on top (security/risk-signals.js): the number
+  // limiting, uploads and the step-ups act on, so the one worth showing. Read fresh on every poll,
+  // outside the risk cache, because a grab or a passed code moves it on the spot.
+  function withAdjustments(entry, userId) {
+    if (!entry || entry.score == null) return entry;
+    const adjustments = stores.signals.adjustments(userId);
+    if (!adjustments.length) return { ...entry, adjustments };
+    const score = effectiveScore(entry.score, adjustments.map((a) => a.delta));
+    return { ...entry, engineScore: entry.score, score, level: levelFor(score), adjustments };
   }
 
   const riskOverview = () => cachedRisk('overview', async () => {
@@ -92,7 +106,7 @@ function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguar
     const list = people.overview(cutoffs(t)).map((row) => ({
       ...row,
       online: row.last_seen_at != null && t - row.last_seen_at < ONLINE_MS,
-      risk: risk?.byUser.get(row.id) ?? null,
+      risk: withAdjustments(risk?.byUser.get(row.id) ?? null, row.id),
     }));
 
     if (shouldRecord(`${viewer.id}:directory`, t)) {
@@ -164,7 +178,7 @@ function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguar
       shared: files.sharedWith(id, viewer.id),
       sessions: liveSessions,
       activity: people.activity(id, ACTIVITY_LIMIT),
-      risk: await riskFor(id),
+      risk: withAdjustments(await riskFor(id), id),
       limit: riskState.limitFor(id),
       // Switching limiting off for an admin, or for yourself, is the CEO's call alone: an admin
       // who could waive their own limit would make the whole thing optional.
@@ -176,7 +190,7 @@ function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguar
   // of the record itself: it would ride along on every poll for something opened now and then.
   router.get('/api/crimguard/people/:id/variables', async ({ req, res, params: { id } }) => {
     sessions.requireAdmin(req);
-    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    if (!crimguard) throw riskDatabaseMissing();
     if (!people.person(id)) throw new HttpError(404, 'There is no account with that id.');
 
     const report = await telemetry.report.forRedUser(id);
@@ -209,7 +223,7 @@ function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguar
         return n;
       }
       case 'date':
-        return isoDate(raw, meta.feature_key);
+        return dateField(raw, meta.feature_key);
       case 'category':
         if (typeof raw !== 'string' || raw.length > 40) throw new HttpError(400, `${meta.feature_key} must be a short word.`);
         return raw;
@@ -223,14 +237,14 @@ function registerCrimGuardRoutes(router, { stores, sessions, telemetry, crimguar
 
   router.put('/api/crimguard/people/:id/override', async ({ req, res, params: { id }, client }) => {
     const admin = sessions.requireAdmin(req);
-    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    if (!crimguard) throw riskDatabaseMissing();
     const body = await readJson(req);
 
     // The id here is a Red account, the same as everywhere else in the admin console.
     const person = people.person(id);
     if (!person) throw new HttpError(404, 'There is no account with that id.');
 
-    const on = body.date ? isoDate(body.date, 'date') : new Date().toISOString().slice(0, 10);
+    const on = body.date ? dateField(body.date, 'date') : new Date().toISOString().slice(0, 10);
 
     let score = null;
     if (body.score !== undefined && body.score !== null && body.score !== '') {

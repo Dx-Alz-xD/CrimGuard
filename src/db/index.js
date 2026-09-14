@@ -14,6 +14,7 @@ const { createPeopleStore } = require('./people');
 const { createRiskStore } = require('./risk');
 const { createDepartureStore } = require('./departures');
 const { createSignalStore } = require('./signals');
+const { createDownloadMfaStore } = require('./download-mfa');
 
 const STATUSES = ['planning', 'active', 'done'];
 
@@ -64,6 +65,7 @@ function createStores(db) {
     risk: createRiskStore(db),
     departures: createDepartureStore(db),
     signals: createSignalStore(db),
+    downloadMfa: createDownloadMfaStore(db),
     audit: createAuditLog(db),
   };
 }

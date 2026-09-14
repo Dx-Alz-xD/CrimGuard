@@ -8,20 +8,20 @@
 //   honeytrap   decoys planted for risky accounts, and the canaries that give a theft away
 //               (src/honeytrap/)
 //
-// src/app.js builds this once and calls into it at four points: routes, a per-request guard, the
-// scoring hook, and saved text. Keeping every other detail here means app.js - which several
-// people edit - changes by a handful of lines when any of this does.
+// src/services.js builds this once, and the app calls into it at four points: routes, a
+// per-request guard (by way of security/session-gate.js), the scoring hook, and saved text.
+// Keeping every other detail here means the shared files change by a handful of lines when any
+// of this does.
 
-const { HttpError } = require('../http/errors');
+const { HttpError, sessionEnded } = require('../http/errors');
 const { createSubjects } = require('../telemetry/subjects');
 const { createIdentity } = require('../identity/identity');
-const { registerIdentityRoutes, openDuringStepUp } = require('../identity/routes');
+const { registerIdentityRoutes } = require('../identity/routes');
 const { createBiometrics } = require('../biometrics/biometrics');
 const { registerBiometricRoutes } = require('../biometrics/routes');
 const { createHoneytrap } = require('../honeytrap/honeytrap');
 const { registerHoneytrapRoutes, signedOutBy } = require('../honeytrap/routes');
 
-const ENDED = 'Your session has ended. Please sign in again.';
 const HONEYTRAP_INTERVAL_MS = 60 * 60 * 1000;
 const MAX_INSPECTED_BYTES = 2 * 1024 * 1024;
 
@@ -46,7 +46,7 @@ function createProtection({
   async function inspectText({ user, text, channel, client }) {
     if (!honeytrap.enabled || !text) return;
     const reports = await honeytrap.inspectText({ user, text, channel, client });
-    if (signedOutBy(reports, user)) throw new HttpError(401, ENDED);
+    if (signedOutBy(reports, user)) throw sessionEnded();
   }
 
   return {
@@ -62,16 +62,14 @@ function createProtection({
       registerHoneytrapRoutes(router, all);
     },
 
-    // Before any API route runs. A frozen account is signed out; a session with an open step-up
-    // can reach nothing but the step-up and the few paths that keep it working.
-    async guard(req, pathname) {
-      if (!identity.enabled || openDuringStepUp(pathname)) return;
-      const user = sessions.current(req);
-      if (!user) return;
+    // Before any API route runs, for a signed-in session on a path that is not left open while a
+    // step-up is (security/session-gate.js decides both). A frozen account is signed out.
+    async guard(req, user) {
+      if (!identity.enabled) return;
       const status = await identity.statusFor(user, req.sessionTokenHash);
       if (status.frozen) {
         stores.sessions.removeAll(user.id);
-        throw new HttpError(401, ENDED);
+        throw sessionEnded();
       }
       if (status.stepUp) {
         throw Object.assign(new HttpError(403, 'Please confirm it’s you to carry on.'), { code: 'step_up_required' });

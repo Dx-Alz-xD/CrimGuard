@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>Sign in · Red</title>
+  <meta name="description" content="Sign in to Red to reach your projects, your files and what has been shared with you.">
+  <link rel="canonical" href="/login">
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -60,5 +62,15 @@
     </aside>
   </main>
   <script src="/static/app.js"></script>
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    "itemListElement": [
+      { "@type": "ListItem", "position": 1, "name": "Red", "item": "/" },
+      { "@type": "ListItem", "position": 2, "name": "Sign in", "item": "/login" }
+    ]
+  }
+  </script>
 </body>
 </html>

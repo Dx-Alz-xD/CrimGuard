@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <title>CrimGuard</title>
   <meta name="description" content="Everyone with an account, what they hold and who can see it, kept up to date.">
+  <meta name="robots" content="noindex, nofollow">
   <link rel="icon" href="/static/crimguard.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -75,11 +76,26 @@
         <div class="empty"><p>Loading…</p></div>
       </section>
     </div>
+
+    <section class="cg-console" id="cg-console" aria-labelledby="cg-console-title">
+      <header class="cg-console-head">
+        <h2 id="cg-console-title">Live console</h2>
+        <p class="cg-console-note">Security events as Red records them. Read-only: commands only change this view.</p>
+        <span class="cg-console-state" id="cg-console-state" data-state="live" aria-live="polite"></span>
+      </header>
+      <ol class="cg-console-output" id="cg-console-output" role="log" aria-live="polite" aria-label="Security events" tabindex="0"></ol>
+      <form class="cg-console-form" id="cg-console-form" autocomplete="off">
+        <label class="cg-console-prompt" for="cg-console-input" aria-hidden="true">&gt;</label>
+        <input class="cg-console-input" id="cg-console-input" type="text" spellcheck="false" maxlength="200"
+               placeholder="help, filter <text>, level alert, pause…" aria-label="Console command">
+      </form>
+    </section>
   </main>
 
   <div class="toast" id="toast" role="status" hidden></div>
   <script src="/static/app.js"></script>
   <script src="/static/crimguard.js"></script>
+  <script src="/static/event-console.js"></script>
   <script src="/static/telemetry.js"></script>
 </body>
 </html>

@@ -12,7 +12,7 @@
 
 const crypto = require('node:crypto');
 const { isPrivileged } = require('../security/access');
-const { createSubjects } = require('./subjects');
+const { createSubjects, redIdOf } = require('./subjects');
 const { createEvents } = require('./events');
 const { parseBatch } = require('./ingest');
 const { featuresFor } = require('./features');
@@ -322,7 +322,7 @@ function createTelemetry(db, {
         person: {
           name: row.full_name,
           email: row.email,
-          redUserId: row.okta_user_id ? Number(String(row.okta_user_id).slice(4)) : null,
+          redUserId: redIdOf(row.okta_user_id),
         },
       }));
     },
@@ -477,7 +477,7 @@ function createTelemetry(db, {
         const result = await scorer.scoreUserDay(person.id, date);
         if (!result) continue;
         scored += 1;
-        const redUserId = person.okta_user_id ? Number(person.okta_user_id.slice(4)) : null;
+        const redUserId = redIdOf(person.okta_user_id);
         if (redUserId && date === today() && await honeytokens.plantIfNeeded(redUserId, result.finalScore)) planted += 1;
         // Only today is reported onward. This also re-runs yesterday on startup, and the website
         // keeps one current score per account, so reporting that would overwrite today's.
@@ -607,7 +607,7 @@ function createTelemetry(db, {
           coverage: coverageSummary(),
           people: rows.map((row) => ({
             id: row.id,
-            redUserId: row.okta_user_id ? Number(row.okta_user_id.slice(4)) : null,
+            redUserId: redIdOf(row.okta_user_id),
             name: row.full_name,
             email: row.email,
             role: row.is_privileged ? 'admin' : 'user',

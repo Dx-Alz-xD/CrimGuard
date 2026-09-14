@@ -7,9 +7,12 @@
 // other system to keep - employment type, a leaving date, a review or a period of leave -
 // which is what the engine's amplifier runs on.
 
-const { HttpError } = require('../http/errors');
+const { HttpError, riskDatabaseMissing } = require('../http/errors');
 const { readJson } = require('../http/request');
 const { sendJson } = require('../http/response');
+const { ignoreDeletedAccount } = require('../db/errors');
+const { redIdOf } = require('../telemetry/subjects');
+const { dateField, oneOf, numberUpTo } = require('../validation');
 
 const EMPLOYMENT_TYPES = ['full_time', 'contractor', 'temp'];
 const LEAVE_TYPES = ['pto', 'sick', 'parental', 'sabbatical', 'garden_leave', 'unpaid', 'other'];
@@ -17,36 +20,13 @@ const LEAVE_TYPES = ['pto', 'sick', 'parental', 'sabbatical', 'garden_leave', 'u
 const HR_EVENT_TYPES = ['performance_review', 'disciplinary_action', 'manager_change', 'compensation_change',
   'resignation_notice', 'termination_scheduled'];
 
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
-
-function date(value, field, { required = false } = {}) {
-  if (value === null || value === undefined || value === '') {
-    if (required) throw new HttpError(400, `${field} is required.`);
-    return null;
-  }
-  if (typeof value !== 'string' || !ISO_DATE.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
-    throw new HttpError(400, `${field} must be a date, as YYYY-MM-DD.`);
-  }
-  return value;
-}
-
-function oneOf(value, allowed, field) {
-  if (!allowed.includes(value)) throw new HttpError(400, `${field} must be one of: ${allowed.join(', ')}.`);
-  return value;
-}
-
-function positive(value, field, max) {
-  const n = Number(value);
-  if (!Number.isFinite(n) || n < 0 || n > max) throw new HttpError(400, `${field} must be between 0 and ${max}.`);
-  return n;
-}
-
 // A leaving date, whichever way it was recorded: the field on the person, or the earliest dated
 // departure event. The amplifier already treats both as a departure (crimguard/risk/amplifier.js),
 // so the gate has to as well, or a resignation notice would raise the score without closing the door.
 const DEPARTURE_EVENTS = ['resignation_notice', 'termination_scheduled', 'termination'];
 
-const isoDate = (value) => {
+// A DATE column as YYYY-MM-DD, whichever driver read it.
+const dateOnly = (value) => {
   if (!value) return null;
   if (value instanceof Date) return value.toISOString().slice(0, 10);
   return String(value).slice(0, 10);
@@ -76,19 +56,12 @@ function registerTelemetryRoutes(router, { stores, sessions, telemetry, crimguar
         [crimUserId, ...DEPARTURE_EVENTS],
       ),
     ]);
-    const external = person.rows[0]?.okta_user_id;
-    if (!external || !String(external).startsWith('red:')) return;
-    const redUserId = Number(String(external).slice(4));
-    if (!Number.isInteger(redUserId) || redUserId <= 0) return;
+    const redUserId = redIdOf(person.rows[0]?.okta_user_id);
+    if (!redUserId) return;
 
-    const dates = [isoDate(person.rows[0].termination_date), isoDate(events.rows[0]?.leaving)].filter(Boolean);
+    const dates = [dateOnly(person.rows[0].termination_date), dateOnly(events.rows[0]?.leaving)].filter(Boolean);
     const terminationDate = dates.length ? dates.sort()[0] : null;
-    try {
-      stores.departures.setState(redUserId, { terminationDate });
-    } catch (err) {
-      // An account deleted between the HR edit and the write-back is not worth raising.
-      if (!/FOREIGN KEY constraint failed/.test(err.message)) throw err;
-    }
+    ignoreDeletedAccount(() => stores.departures.setState(redUserId, { terminationDate }));
   }
 
   // The collector. Anyone signed in posts their own behaviour here, and only their own: the
@@ -106,7 +79,7 @@ function registerTelemetryRoutes(router, { stores, sessions, telemetry, crimguar
   // the account comes from the session, so there is nothing to point at another person.
   router.get('/api/me/risk', async ({ req, res }) => {
     const user = sessions.requireUser(req);
-    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    if (!crimguard) throw riskDatabaseMissing();
 
     await telemetry.refreshUser(user);
     const report = await telemetry.report.forRedUser(user.id);
@@ -139,7 +112,7 @@ function registerTelemetryRoutes(router, { stores, sessions, telemetry, crimguar
 
   const requireRisk = (req) => {
     const admin = sessions.requireAdmin(req);
-    if (!crimguard) throw new HttpError(503, 'The risk database is not connected.');
+    if (!crimguard) throw riskDatabaseMissing();
     return admin;
   };
 
@@ -156,7 +129,7 @@ function registerTelemetryRoutes(router, { stores, sessions, telemetry, crimguar
   router.get('/api/admin/risk/people/:id', async ({ req, res, params: { id }, url }) => {
     requireRisk(req);
     const on = url.searchParams.get('date');
-    const report = await telemetry.report.person(id, { date: on ? date(on, 'date') : null });
+    const report = await telemetry.report.person(id, { date: on ? dateField(on, 'date') : null });
     if (!report.person) throw new HttpError(404, 'No risk record for that person.');
     sendJson(res, 200, report);
   });
@@ -189,7 +162,7 @@ function registerTelemetryRoutes(router, { stores, sessions, telemetry, crimguar
   router.post('/api/admin/risk/run', async ({ req, res }) => {
     requireRisk(req);
     const body = await readJson(req);
-    const on = body.date ? date(body.date, 'date') : new Date().toISOString().slice(0, 10);
+    const on = body.date ? dateField(body.date, 'date') : new Date().toISOString().slice(0, 10);
     await telemetry.flush();
     sendJson(res, 200, await telemetry.runDay(on));
   });
@@ -206,8 +179,8 @@ function registerTelemetryRoutes(router, { stores, sessions, telemetry, crimguar
 
     const employmentType = Object.hasOwn(body, 'employmentType')
       ? oneOf(body.employmentType, EMPLOYMENT_TYPES, 'Employment type') : undefined;
-    const hireDate = Object.hasOwn(body, 'hireDate') ? date(body.hireDate, 'Hire date') : undefined;
-    const terminationDate = Object.hasOwn(body, 'terminationDate') ? date(body.terminationDate, 'Leaving date') : undefined;
+    const hireDate = Object.hasOwn(body, 'hireDate') ? dateField(body.hireDate, 'Hire date') : undefined;
+    const terminationDate = Object.hasOwn(body, 'terminationDate') ? dateField(body.terminationDate, 'Leaving date') : undefined;
 
     const effectiveHire = hireDate === undefined ? rows[0].hire_date : hireDate;
     if (terminationDate && effectiveHire && terminationDate < effectiveHire) {
@@ -261,7 +234,7 @@ function registerTelemetryRoutes(router, { stores, sessions, telemetry, crimguar
     if (!rows.length) throw new HttpError(404, 'No risk record for that person.');
 
     const type = oneOf(body.type, HR_EVENT_TYPES, 'Event type');
-    const effectiveDate = date(body.effectiveDate, 'Effective date', { required: true });
+    const effectiveDate = dateField(body.effectiveDate, 'Effective date', { required: true });
     // A review only counts towards risk when it was a bad one; the others are stressors either way.
     const isNegative = type === 'performance_review' ? body.isNegative === true : true;
 
@@ -280,12 +253,12 @@ function registerTelemetryRoutes(router, { stores, sessions, telemetry, crimguar
     if (!rows.length) throw new HttpError(404, 'No risk record for that person.');
 
     const leaveType = oneOf(body.leaveType, LEAVE_TYPES, 'Leave type');
-    const startsOn = date(body.startsOn, 'Start date', { required: true });
-    const endsOn = date(body.endsOn, 'End date', { required: true });
+    const startsOn = dateField(body.startsOn, 'Start date', { required: true });
+    const endsOn = dateField(body.endsOn, 'End date', { required: true });
     if (endsOn < startsOn) throw new HttpError(400, 'Leave cannot end before it starts.');
 
-    const daysRequested = body.daysRequested == null ? null : positive(body.daysRequested, 'Days requested', 400);
-    const balanceBefore = body.balanceBefore == null ? null : positive(body.balanceBefore, 'Balance before', 400);
+    const daysRequested = body.daysRequested == null ? null : numberUpTo(body.daysRequested, 'Days requested', 400);
+    const balanceBefore = body.balanceBefore == null ? null : numberUpTo(body.balanceBefore, 'Balance before', 400);
 
     await crimguard.query(
       `INSERT INTO leave_periods (user_id, leave_type, starts_on, ends_on, days_requested, balance_before, requested_at, approved)
@@ -317,4 +290,4 @@ function registerTelemetryRoutes(router, { stores, sessions, telemetry, crimguar
   });
 }
 
-module.exports = { registerTelemetryRoutes, isoDate: date, EMPLOYMENT_TYPES, LEAVE_TYPES, HR_EVENT_TYPES };
+module.exports = { registerTelemetryRoutes, EMPLOYMENT_TYPES, LEAVE_TYPES, HR_EVENT_TYPES };

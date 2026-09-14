@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Page not found · Red</title>
+  <meta name="description" content="That address doesn't match a page in Red. Go back to the start, sign in, or read what Red records about how you work.">
+  <meta name="robots" content="noindex, follow">
+  <link rel="icon" href="static/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,100..900&display=swap">
+  <link rel="stylesheet" href="static/styles.css">
+</head>
+<body data-page="notfound">
+  <header class="site-header">
+    <a class="wordmark" href="index.html"><span class="wordmark-mark" aria-hidden="true"></span>Red</a>
+    <nav class="site-nav" aria-label="Account">
+      <a class="btn btn-quiet" href="admin-login.html">Admin console</a>
+      <a class="btn btn-secondary" href="login.html">Sign in</a>
+    </nav>
+  </header>
+
+  <main class="page notfound-page">
+    <nav class="breadcrumbs" aria-label="Breadcrumb">
+      <ol>
+        <li><a href="index.html">Red</a></li>
+        <li aria-current="page">Page not found</li>
+      </ol>
+    </nav>
+
+    <p class="notfound-code" aria-hidden="true">404</p>
+    <h1>This page doesn&rsquo;t exist</h1>
+    <p class="notfound-lead">
+      The address doesn&rsquo;t match anything in Red. It may have been a file rather than a page,
+      or something that needs you to be signed in first &mdash; a project or a file you cannot open
+      reads as &ldquo;not found&rdquo; on purpose, so its existence isn&rsquo;t given away.
+    </p>
+
+    <div class="notfound-actions">
+      <a class="btn btn-primary" href="index.html">Go to the start</a>
+      <a class="btn btn-secondary" href="login.html">Sign in</a>
+    </div>
+
+    <section class="notfound-links" aria-labelledby="notfound-links-title">
+      <h2 id="notfound-links-title">Where you might have meant to go</h2>
+      <ul>
+        <li><a href="dashboard.html">Your projects and files</a> &mdash; what you own, and what has been shared with you.</li>
+        <li><a href="admin.html">Admin console</a> &mdash; people, roles, access requests and the activity log.</li>
+        <li><a href="privacy.html">What Red records</a> &mdash; every signal collected, and what is never sent.</li>
+      </ul>
+    </section>
+  </main>
+
+  <script src="static/demo-api.js"></script>
+</body>
+</html>

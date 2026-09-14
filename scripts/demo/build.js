@@ -30,16 +30,23 @@ const PAGE_LINKS = [
 const SERVER_ONLY_PAGES = new Set(['risk.html', 'crimguard.html']);
 const SERVER_ONLY_SCRIPTS = [
   'telemetry.js', 'risk-panel.js', 'risk-console.js', 'crimguard.js',
-  'biometrics.js', 'shared-files.js', 'step-up.js', 'identity-console.js',
+  'biometrics.js', 'shared-files.js', 'step-up.js', 'identity-console.js', 'event-console.js',
 ];
 
 function toStatic(html) {
-  let out = html.replaceAll('"/static/', '"static/');
+  // A canonical link and structured data name where the real site lives, which a copy on a static
+  // host is not.
+  let out = html
+    .replace(/[ \t]*<link rel="canonical"[^>]*>\r?\n/g, '')
+    .replace(/[ \t]*<script type="application\/ld\+json">[\s\S]*?<\/script>\r?\n/g, '')
+    .replaceAll('"/static/', '"static/');
   for (const [from, to] of PAGE_LINKS) out = out.replaceAll(`href="${from}"`, `href="${to}"`);
   for (const script of SERVER_ONLY_SCRIPTS) {
     out = out.replace(new RegExp(`[ \t]*<script src="static/${script}"></script>\r?\n`, 'g'), '');
   }
-  // A link into either console would be a dead end in a folder that doesn't contain them.
+  // A link into either console would be a dead end in a folder that doesn't contain them. A list
+  // item that is only there to describe one goes with it.
+  out = out.replace(/[ \t]*<li><a href="(?:risk|crimguard)\.html"[^>]*>.*?<\/a>.*?<\/li>\r?\n/g, '');
   out = out.replace(/\s*<a href="(?:risk|crimguard)\.html"[^>]*>.*?<\/a>/g, '');
 
   const demoScript = '<script src="static/demo-api.js"></script>';

@@ -83,9 +83,18 @@ async function restrictedShare(name, { confidentiality = 4, sharer = null } = {}
 
 const leaves = (userId, days) => stores.departures.setState(userId, { terminationDate: inDays(days, Date.now()) });
 
-test('with nobody leaving, a by-name share above clearance opens exactly as it did before', async () => {
+// A file above clearance always asks for a code first (test/above-clearance-download.test.js).
+async function downloadWithCode(b, fileId) {
+  const held = await b('GET', `/api/files/${fileId}/download`);
+  if (held.body?.code !== 'download_mfa_required') return held;
+  const verified = await b('POST', `/api/files/${fileId}/download/verify`, { code: '123456' });
+  assert.equal(verified.status, 200, JSON.stringify(verified.body));
+  return b('GET', `/api/files/${fileId}/download`);
+}
+
+test('with nobody leaving, a by-name share above clearance opens as it did before, once the code is in', async () => {
   const { person, file } = await restrictedShare('Stacy Staying');
-  const res = await person.b('GET', `/api/files/${file.id}/download`);
+  const res = await downloadWithCode(person.b, file.id);
   assert.equal(res.status, 200);
   assert.equal(res.body, 'the crown jewels');
 });
@@ -150,7 +159,7 @@ test('asking, approving, and then the file opens', async () => {
   assert.equal(decided.body.request.status, 'approved');
   assert.ok(decided.body.request.expiresAt, 'an approval is a key with a life on it');
 
-  const opened = await person.b('GET', `/api/files/${file.id}/download`);
+  const opened = await downloadWithCode(person.b, file.id);
   assert.equal(opened.status, 200);
   assert.equal(opened.body, 'the crown jewels');
 
@@ -207,7 +216,7 @@ test('releasing a file takes the clearance the file itself needs', async () => {
 
   const byCeo = await ceo.b('POST', `/api/admin/access-requests/${id}/decision`, { decision: 'approve' });
   assert.equal(byCeo.status, 200, JSON.stringify(byCeo.body));
-  assert.equal((await person.b('GET', `/api/files/${file.id}/download`)).status, 200);
+  assert.equal((await downloadWithCode(person.b, file.id)).status, 200);
 });
 
 test('the queue is admins only, and asking is refused for a file that is not gated', async () => {

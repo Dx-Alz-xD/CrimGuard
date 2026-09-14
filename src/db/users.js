@@ -11,6 +11,7 @@ function createUserStore(db, { transaction }) {
       SELECT u.id, u.name, u.email, u.role, r.clearance, c.password_hash, c.must_change_password
       FROM users u JOIN user_credentials c ON c.user_id = u.id JOIN roles r ON r.name = u.role
       WHERE u.email = ?`),
+    byEmail: db.prepare('SELECT u.id, u.name, u.email, u.role, r.clearance FROM users u JOIN roles r ON r.name = u.role WHERE u.email = ?'),
     byId: db.prepare('SELECT u.id, u.name, u.email, u.role, r.clearance FROM users u JOIN roles r ON r.name = u.role WHERE u.id = ?'),
     passwordHash: db.prepare('SELECT password_hash FROM user_credentials WHERE user_id = ?'),
 
@@ -67,6 +68,7 @@ function createUserStore(db, { transaction }) {
   return {
     create,
     findForLogin: (email) => q.loginByEmail.get(email),
+    findByEmail: (email) => q.byEmail.get(email),
     findById: (id) => q.byId.get(id),
     passwordHash: (id) => q.passwordHash.get(id)?.password_hash,
     setRole: (id, role) => q.setRole.run(role, id).changes > 0,

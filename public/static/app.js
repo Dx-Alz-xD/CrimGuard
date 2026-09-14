@@ -154,9 +154,16 @@
     });
 
   // Fetches a file and saves it under its own name. Works the same with the server and the static demo.
+  // A file above the downloader's clearance is held until they enter a code; the download then goes again.
   async function download(url, name) {
-    const res = await fetch(url);
-    if (!res.ok) throw await failure(res, url);
+    let res = await fetch(url);
+    if (!res.ok) {
+      const error = await failure(res, url);
+      if (error.code !== 'download_mfa_required') throw error;
+      await downloadCodeDialog(error.details || {});
+      res = await fetch(url);
+      if (!res.ok) throw await failure(res, url);
+    }
     const objectUrl = URL.createObjectURL(await res.blob());
     const link = h('a', { href: objectUrl, download: name, hidden: true });
     document.body.append(link);
@@ -363,6 +370,38 @@
           + 'Confirming takes some of the score back off.',
     });
     return dialog;
+  }
+
+  // The code asked for before each download of a file above your clearance. Resolves once a code is
+  // accepted; rejects, quietly, if the dialog is closed without one.
+  function downloadCodeDialog({ file = {}, clearance, remaining }) {
+    return new Promise((resolve, reject) => {
+      const code = h('input', {
+        type: 'text', id: uid('download-code'), name: 'code', inputmode: 'numeric', autocomplete: 'one-time-code',
+        maxlength: '6', placeholder: '123456', required: true,
+      });
+      let accepted = false;
+      const dialog = formDialog({
+        title: 'Enter your code to download',
+        fields: field('Verification code', code, { hint: 'Demo build: the code is 123456.' }),
+        submitLabel: 'Download',
+        onSubmit: async () => {
+          await api('POST', `/api/files/${file.id}/download/verify`, { code: code.value });
+          accepted = true;
+        },
+      });
+      const element = code.closest('dialog');
+      element.addEventListener('close', () => {
+        element.remove();
+        if (accepted) resolve();
+        else reject(Object.assign(new Error('Download cancelled.'), { code: 'download_cancelled' }));
+      });
+      const level = CONFIDENTIALITY[file.confidentiality] || `level ${file.confidentiality}`;
+      dialog.open({
+        note: `${file.name || 'This file'} is ${level}, above your clearance of ${clearance}. Each download of it needs a code.`
+          + (remaining != null && remaining < 5 ? ` ${remaining} ${remaining === 1 ? 'try' : 'tries'} left.` : ''),
+      });
+    });
   }
 
   // ---- signed-in shell: account menu and your own password ------------------------
@@ -1223,6 +1262,7 @@
       try {
         await download(`/api/files/${file.id}/download`, file.name);
       } catch (err) {
+        if (err.code === 'download_cancelled') return undefined;
         if (err.code !== 'access_request_required') return toast(err.message, 'error');
         askFor(file, err.details);
       }

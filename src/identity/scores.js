@@ -25,7 +25,4 @@ async function latestScore(db, crimUserId) {
   };
 }
 
-// Red account id from users.okta_user_id ('red:12'), or null for people from elsewhere.
-const redIdOf = (externalId) => (typeof externalId === 'string' && externalId.startsWith('red:') ? Number(externalId.slice(4)) : null);
-
-module.exports = { latestScore, redIdOf };
+module.exports = { latestScore };

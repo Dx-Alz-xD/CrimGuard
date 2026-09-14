@@ -29,6 +29,14 @@ const SENSITIVE_KINDS = new Set(['account', 'directory', 'audit', 'risk']);
 
 const isSensitiveUri = (uri) => SENSITIVE_KINDS.has(String(uri).split(':')[1]?.split('/')[0]);
 
+// A Red account as a CrimGuard person's external id, and back. Anyone whose okta_user_id came
+// from somewhere other than Red has no Red account, and redIdOf says so with null.
+const externalIdFor = (redUserId) => `red:${redUserId}`;
+function redIdOf(externalId) {
+  const match = /^red:(\d{1,15})$/.exec(String(externalId ?? ''));
+  return match ? Number(match[1]) : null;
+}
+
 // A stable id for a Red object, e.g. 'red:project/12' or 'red:page/dashboard'.
 const resourceUri = (kind, id) => `red:${kind}${id === undefined || id === null ? '' : `/${id}`}`;
 
@@ -84,7 +92,7 @@ function createSubjects(db) {
     }
 
     const org = await organization();
-    const externalId = `red:${user.id}`;
+    const externalId = externalIdFor(user.id);
     const id = await upsertId({
       table: 'users',
       insert: `INSERT INTO users (org_id, email, full_name, employment_type, is_privileged, is_analyst, okta_user_id, hire_date)
@@ -107,7 +115,7 @@ function createSubjects(db) {
     const cached = userIds.get(redUserId);
     if (cached !== undefined) return cached;
     const org = await organization();
-    const { rows } = await db.query('SELECT id FROM users WHERE org_id = ? AND okta_user_id = ?', [org, `red:${redUserId}`]);
+    const { rows } = await db.query('SELECT id FROM users WHERE org_id = ? AND okta_user_id = ?', [org, externalIdFor(redUserId)]);
     if (!rows.length) return null;
     userIds.set(redUserId, rows[0].id);
     return rows[0].id;
@@ -199,4 +207,4 @@ function createSubjects(db) {
   };
 }
 
-module.exports = { createSubjects, RESOURCE_KINDS, ORG_URI, resourceUri, isSensitiveUri, shortHash };
+module.exports = { createSubjects, RESOURCE_KINDS, ORG_URI, resourceUri, isSensitiveUri, shortHash, externalIdFor, redIdOf };

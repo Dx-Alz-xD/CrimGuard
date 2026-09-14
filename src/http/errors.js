@@ -11,4 +11,11 @@ class HttpError extends Error {
   }
 }
 
-module.exports = { HttpError };
+// The answer to a request whose session was just ended under it - a freeze, a tripped decoy. The
+// page treats any 401 as "go and sign in", which is exactly what is wanted.
+const sessionEnded = () => new HttpError(401, 'Your session has ended. Please sign in again.');
+
+// A route that reads the CrimGuard risk database, on a server started without one.
+const riskDatabaseMissing = () => new HttpError(503, 'The risk database is not connected.');
+
+module.exports = { HttpError, sessionEnded, riskDatabaseMissing };

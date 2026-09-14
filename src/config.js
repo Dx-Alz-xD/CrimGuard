@@ -4,6 +4,8 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 
+const { parsePublicOrigin } = require('./http/origin');
+
 const ROOT_DIR = path.join(__dirname, '..');
 
 class ConfigError extends Error {}
@@ -72,6 +74,11 @@ function loadConfig(env = process.env) {
     throw new ConfigError('RED_MAX_FILE_MB must be a number of megabytes above 0 and at most 100.');
   }
 
+  const publicOrigin = parsePublicOrigin(env.RED_PUBLIC_ORIGIN);
+  if (publicOrigin === undefined) {
+    throw new ConfigError('RED_PUBLIC_ORIGIN must be an origin such as https://red.example.com, with nothing after the host.');
+  }
+
   return {
     isProduction,
     // In a container or on a hosting platform traffic arrives from outside, so listen on every interface there.
@@ -81,6 +88,8 @@ function loadConfig(env = process.env) {
     pepper,
     secureCookies: env.RED_SECURE_COOKIES === '1',
     trustProxy: env.RED_TRUST_PROXY === '1',
+    // Where the site is published, for the absolute URLs in sitemap.xml and llms.txt.
+    publicOrigin,
     maxFileBytes: maxFileMb === null ? DEFAULT_MAX_FILE_BYTES : Math.round(maxFileMb * 1024 * 1024),
     admin: {
       name: env.RED_ADMIN_NAME || 'Red Admin',

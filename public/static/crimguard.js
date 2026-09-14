@@ -424,6 +424,7 @@
         { action: overrideButton() });
     }
     const context = [risk.scenario && risk.scenario.replace(/_/g, ' '), risk.date && `scored for ${risk.date}`].filter(Boolean).join(', ');
+    const adjustments = risk.adjustments || [];
     return section('Risk',
       h('div', { class: 'cg-risk-body' },
         h('div', { class: 'cg-score' },
@@ -434,8 +435,16 @@
         risk.contributions.length
           ? h('ol', { class: 'cg-drivers', 'aria-label': 'What is raising the score' }, risk.contributions.map((item) =>
             h('li', {}, h('span', {}, String(item.feature).replace(/_/g, ' ')), h('span', { class: 'risk-points' }, `+${item.points}`))))
-          : h('p', { class: 'muted cg-drivers-none' }, 'Nothing is raising this score.')),
-      { meta: 'From the risk engine. The risk console has all 100 variables.', action: overrideButton() });
+          : h('p', { class: 'muted cg-drivers-none' }, 'Nothing is raising this score.'),
+        adjustments.length > 0 && h('ol', { class: 'cg-drivers', 'aria-label': 'Live adjustments on top of the engine score' }, adjustments.map((item) =>
+          h('li', {}, h('span', {}, item.reason || item.kind.replace(/_/g, ' ')),
+            h('span', { class: 'risk-points' }, `${item.delta > 0 ? '+' : '−'}${Math.abs(item.delta)}`))))),
+      {
+        meta: risk.engineScore != null
+          ? `Engine score ${risk.engineScore.toFixed(1)}, with live adjustments on top. The risk console has all 100 variables.`
+          : 'From the risk engine. The risk console has all 100 variables.',
+        action: overrideButton(),
+      });
   }
 
   function openAccess(file) {
@@ -461,7 +470,8 @@
         }, 'Access'),
         h('button', {
           class: 'btn btn-quiet btn-sm', type: 'button', 'data-focus': `download-${file.id}`, 'aria-label': `Download ${file.name}`,
-          onclick: () => UI.download(`/api/files/${file.id}/download`, file.name).catch((err) => toast(err.message, 'error')),
+          onclick: () => UI.download(`/api/files/${file.id}/download`, file.name)
+            .catch((err) => { if (err.code !== 'download_cancelled') toast(err.message, 'error'); }),
         }, 'Download')));
   }
 

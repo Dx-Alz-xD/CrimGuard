@@ -169,3 +169,32 @@ test("with the risk database connected, the dashboard adds each person's score",
   assert.equal(detail.status, 200);
   assert.ok(detail.body.risk.history.length >= 1);
 });
+
+test('grabbing a file above your clearance shows on the dashboard as a higher score', async (t) => {
+  const crimguard = await connectCrimGuard({ mode: 'sqlite', sqlitePath: ':memory:' });
+  const risky = await startApp({ crimguard, riskInterval: 0 });
+  const { telemetry } = risky.server;
+  t.after(async () => {
+    await telemetry.flush();
+    risky.close();
+    await crimguard.close();
+  });
+
+  const owner = await risky.signUp('Olga Owner');
+  const grabber = await risky.signUp('Greg Grab');
+  const admin = await risky.signInAdmin();
+  const file = await uploadFile(owner.b, (await newProject(owner.b, 'Board')).id, 'board.txt', 'numbers', risky.base);
+  assert.equal((await admin.b('PUT', `/api/files/${file.id}/access`, { confidentiality: 3, roles: [], people: [grabber.user.id] })).status, 200);
+
+  assert.equal((await admin.b('PUT', `/api/crimguard/people/${grabber.user.id}/override`, { score: 30 })).status, 200);
+  assert.equal((await grabber.b('GET', `/api/files/${file.id}/download`)).body.code, 'download_mfa_required');
+
+  const row = (await admin.b('GET', '/api/crimguard/overview')).body.people.find((entry) => entry.id === grabber.user.id);
+  assert.equal(row.risk.engineScore, 30);
+  assert.equal(row.risk.score, 50, 'the engine score plus the grab');
+  assert.equal(row.risk.level, 'medium', 'and the level follows the score shown');
+
+  const detail = await admin.b('GET', `/api/crimguard/people/${grabber.user.id}`);
+  assert.equal(detail.body.risk.score, 50);
+  assert.deepEqual(detail.body.risk.adjustments.map((a) => [a.kind, a.delta]), [['rapid_above_clearance_download', 20]]);
+});
