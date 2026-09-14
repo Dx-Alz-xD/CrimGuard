@@ -19,6 +19,7 @@ function startJobs({ stores, throttle, pow, limits, telemetry, crimguard, now = 
       stores.audit.purge();
       pow.purge();
       stores.signals.purge();
+      stores.downloadMfa.purge();
     } catch (err) {
       console.error('Housekeeping failed:', err);
     }

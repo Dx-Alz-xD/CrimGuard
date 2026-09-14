@@ -24,6 +24,13 @@ async function uploadFile(b, name, text = 'contents') {
 }
 
 const openStatus = async (b, file) => (await b('GET', `/api/files/${file.id}/download`)).status;
+// A file above the opener's clearance asks for a code first (test/above-clearance-download.test.js).
+async function openStatusWithCode(b, file) {
+  const held = await b('GET', `/api/files/${file.id}/download`);
+  if (held.body?.code !== 'download_mfa_required') return held.status;
+  assert.equal((await b('POST', `/api/files/${file.id}/download/verify`, { code: '123456' })).status, 200);
+  return openStatus(b, file);
+}
 const setAccess = (b, file, body) => b('PUT', `/api/files/${file.id}/access`, body);
 const roleId = async (b, name) => (await b('GET', '/api/roles')).body.roles.find((role) => role.name === name).id;
 const sharedWith = async (b) => (await b('GET', '/api/files/shared')).body.files;
@@ -100,7 +107,7 @@ test('sharing with a person works at any confidentiality, and removing them take
   const granted = await setAccess(admin.b, file, { confidentiality: 4, people: [intern.user.id, owner.user.id, intern.user.id] });
   assert.equal(granted.status, 200, JSON.stringify(granted.body));
   assert.deepEqual(granted.body.people.map((person) => person.id), [intern.user.id], 'the owner is never on the list, and nobody is on it twice');
-  assert.equal(await openStatus(intern.b, file), 200);
+  assert.equal(await openStatusWithCode(intern.b, file), 200);
   assert.equal((await sharedWith(intern.b)).find((item) => item.id === file.id).by_name, true);
 
   await setAccess(admin.b, file, { confidentiality: 4, people: [] });
@@ -124,7 +131,7 @@ test("Secret files are the CEO's: admins can't open, mark or unlock them", async
 
   // The CEO can let one admin in by name. That admin can open it, but still can't change it.
   await setAccess(ceo.b, file, { confidentiality: 5, people: [admin.user.id] });
-  assert.equal(await openStatus(admin.b, file), 200);
+  assert.equal(await openStatusWithCode(admin.b, file), 200);
   assert.equal((await admin.b('GET', `/api/files/${file.id}/access`)).body.canManage, false);
   assert.equal((await setAccess(admin.b, file, { confidentiality: 4, people: [] })).status, 403);
 });
@@ -185,7 +192,9 @@ test("opening someone else's file and changing access are both in the activity l
   const { file } = await uploadFile(owner.b, 'minutes.txt');
 
   await setAccess(admin.b, file, { confidentiality: 3, people: [reader.user.id] });
-  assert.equal(await openStatus(reader.b, file), 200);
+  // Given a minute ago, so this is an ordinary download rather than a grab (which is logged too).
+  app.db.prepare("UPDATE file_user_grants SET granted_at = datetime('now', '-60 seconds') WHERE file_id = ?").run(file.id);
+  assert.equal(await openStatusWithCode(reader.b, file), 200);
   assert.equal(await openStatus(owner.b, file), 200);
 
   // Matched on the owner as well as the id: SQLite can reuse the id of a file deleted by an earlier test.

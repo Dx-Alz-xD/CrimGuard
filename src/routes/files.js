@@ -7,7 +7,8 @@ const { sendJson, noContent } = require('../http/response');
 const { CONFIDENTIALITY, MIN_LEVEL, MAX_LEVEL, canManageFileAccess, isLevel, isPrivileged, outranks } = require('../security/access');
 const { createDecoyTrap } = require('./decoys');
 const { requestView } = require('../db/departures');
-const { uploadBlocked, UPLOAD_BLOCK_SCORE } = require('../security/risk-signals');
+const { uploadBlocked, otpValid, UPLOAD_BLOCK_SCORE } = require('../security/risk-signals');
+const { RAPID_DOWNLOAD, DOWNLOAD_MFA, aboveClearance, rapidDownload } = require('../security/above-clearance');
 const { singleLine } = require('../validation');
 
 // How many roles and people one file can be shared with in a single save.
@@ -77,7 +78,7 @@ function idList(value, what, max) {
 }
 
 function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes, protection }) {
-  const { projects, files, roles, users, audit, departures } = stores;
+  const { projects, files, roles, users, audit, departures, signals, downloadMfa } = stores;
 
   // While someone is working their notice, a file handed to them by name that sits above their
   // clearance needs an admin to release it (security/departure.js says why). The file stays listed
@@ -95,6 +96,37 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
 
   function refuse(gate) {
     return new HttpError(403, `${gate.explanation} Ask an admin to release it.`, { code: 'access_request_required' });
+  }
+
+  // A file above this person's clearance (security/above-clearance.js). `file` has been through the
+  // visibility rule, so `clearance` on it is theirs after risk limiting.
+  const isAboveClearance = (user, file) =>
+    aboveClearance({ confidentiality: file.confidentiality, clearance: file.clearance, isOwner: Number(file.owner_id) === Number(user.id) });
+
+  // Reaching for it within seconds of being given it raises the score. Judged on every attempt,
+  // including the one the code is then asked for, and recorded once per grant: retrying after the
+  // code replaces the same adjustment rather than adding another.
+  function flagRapidDownload({ req, client, user, file, now }) {
+    const accessSince = downloadMfa.accessSince(user.id, file.id);
+    const { rapid, seconds } = rapidDownload({ accessSince, now });
+    if (!rapid) return;
+
+    const already = signals.adjustments(user.id).some((a) =>
+      a.kind === RAPID_DOWNLOAD.kind && a.detail.file === file.id && a.detail.accessSince === accessSince);
+    if (already) return;
+
+    const detail = { file: file.id, confidentiality: file.confidentiality, clearance: file.clearance, seconds, accessSince };
+    signals.put(user.id, {
+      delta: RAPID_DOWNLOAD.delta,
+      kind: RAPID_DOWNLOAD.kind,
+      reason: `Downloaded a level ${file.confidentiality} file ${seconds}s after being given it, above their clearance of ${file.clearance}.`,
+      detail,
+      expiresAt: new Date(now + RAPID_DOWNLOAD.holdsForMs).toISOString(),
+    });
+    audit.record('risk.rapid_download', {
+      actor: user, target: users.findById(file.owner_id) || null, ...client, details: { ...detail, delta: RAPID_DOWNLOAD.delta },
+    });
+    telemetry.onViolation({ user, tokenHash: req.sessionTokenHash, client, path: `/api/files/${file.id}/download` });
   }
 
   // Limiting narrows what a risky account can read (security/limits.js). This is the other
@@ -270,16 +302,67 @@ function registerFileRoutes(router, { stores, sessions, telemetry, maxFileBytes,
       });
     }
 
+    // Above their clearance: judged for a grab first, then held for a code unless one is waiting.
+    const above = isAboveClearance(user, file);
+    if (above) {
+      const now = Date.now();
+      flagRapidDownload({ req, client, user, file, now });
+      if (!downloadMfa.spend(req.sessionTokenHash, file.id, now)) {
+        const standing = downloadMfa.demand({ tokenHash: req.sessionTokenHash, fileId: file.id, userId: user.id });
+        throw Object.assign(new HttpError(403, standing.lockedOut
+          ? 'Too many wrong codes for this file. It stays shut on this session; ask an admin.'
+          : `This file is above your clearance of ${file.clearance}. Enter your verification code to download it.`,
+        { code: standing.lockedOut ? 'download_mfa_locked' : 'download_mfa_required' }), {
+          details: {
+            file: { id: file.id, name: file.name, confidentiality: file.confidentiality },
+            clearance: file.clearance,
+            remaining: standing.remaining,
+          },
+        });
+      }
+    }
+
     const project = { id: file.project_id, name: file.project_name };
     reportAccess({ req, client, user, project }, 'download', { bytes: file.content.byteLength });
     // Taking a copy of someone else's file is what the activity log is for; your own files are not logged.
     if (file.owner_id !== user.id) {
       const owner = users.findById(file.owner_id);
       audit.record('file.downloaded', {
-        actor: user, target: owner || null, ...client, details: { file: file.id, project: file.project_id },
+        actor: user, target: owner || null, ...client,
+        details: { file: file.id, project: file.project_id, ...(above ? { aboveClearance: true, verified: true } : {}) },
       });
     }
     sendDownload(res, file.name, file.content);
+  });
+
+  // The code for one download of a file above your clearance. A correct one is spent by the next
+  // download of that file on this session, within DOWNLOAD_MFA.validForMs.
+  router.post('/api/files/:fileId/download/verify', async ({ req, res, params, client }) => {
+    const user = sessions.requireUser(req);
+    const file = files.visible(params.fileId, user.id);
+    if (!file) throw fileNotFound();
+    if (!isAboveClearance(user, file)) throw new HttpError(400, 'This file does not need a code.');
+
+    const body = await readJson(req);
+    const result = downloadMfa.attempt({
+      tokenHash: req.sessionTokenHash, fileId: file.id, userId: user.id, correct: otpValid(typeof body.code === 'string' ? body.code : ''),
+    });
+    const details = { file: file.id, confidentiality: file.confidentiality, clearance: file.clearance, attempts: result.attempts };
+
+    if (result.status === 'locked_out') {
+      audit.record('security.download_mfa_locked', { actor: user, target: user, ...client, details });
+      telemetry.onViolation({ user, tokenHash: req.sessionTokenHash, client, path: `/api/files/${file.id}/download/verify` });
+      throw new HttpError(403, 'Too many wrong codes for this file. It stays shut on this session; ask an admin.', { code: 'download_mfa_locked' });
+    }
+    if (result.status === 'wrong') {
+      audit.record('security.download_mfa_failed', { actor: user, target: user, ...client, details });
+      throw Object.assign(new HttpError(400, 'That code is not right.', { code: 'download_mfa_failed' }), {
+        details: { remaining: Math.max(0, DOWNLOAD_MFA.maxAttempts - result.attempts) },
+      });
+    }
+
+    audit.record('security.download_mfa_passed', { actor: user, target: user, ...client, details });
+    sendJson(res, 200, { status: 'passed', validForSeconds: DOWNLOAD_MFA.validForMs / 1000 });
   });
 
   // Asking for a file the gate is holding. One open ask per person per file: asking twice is the

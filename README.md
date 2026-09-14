@@ -109,7 +109,9 @@ same scale: 1 Open, 2 Internal, 3 Confidential, 4 Restricted, 5 Secret.
   or in CrimGuard. Sharing with a **role** lets everyone in it open the file while the
   role's clearance covers the file's confidentiality: a Confidential file shared with
   Employees stays closed to them until it is lowered to Internal. Sharing with a
-  **person** lets them open it at any confidentiality.
+  **person** lets them open it at any confidentiality, though each download of a file
+  above their clearance asks for a code first (see
+  [Downloading above your clearance](#downloading-above-your-clearance)).
 - **New files are Internal and shared with nobody.** Existing files became Internal
   when roles arrived.
 - **Only the CEO can mark a file Secret**, or change who can see a Secret file. An admin
@@ -436,6 +438,28 @@ on). Access is decided in SQL against `red.db`, so it is copied into `user_depar
 changes, the same arrangement as the score. The window, the approval's life and the rule itself are
 in `src/security/departure.js` and nowhere else.
 
+### Downloading above your clearance
+
+A file shared with someone by name, or released to them by an admin, can sit above their clearance.
+Two rules apply when they take a copy of one. Their own files are never covered, and clearance means
+the one they have after risk limiting, the same as the leaving gate.
+
+- **Every download asks for a code.** The download is refused with `download_mfa_required` and the
+  page asks for the verification code (the demo build's `123456`, as at the step-up), then downloads.
+  One code is good for one download of that file, on that session, within 2 minutes. Five wrong codes
+  shut that file on that session (`download_mfa_locked`). Passes, failures and lockouts go in the
+  activity log.
+- **Grabbing it at once raises the score.** A download attempted within **5 seconds** of being given
+  the file (the by-name share, or the admin's release, whichever is later) adds **+20** to the score
+  for **7 days**, as a live adjustment beside the engine's score. It is judged on the first attempt,
+  before the code is asked for, so typing the code can't hide it. A retry is the same grab, not a
+  second one. It is logged as `risk.rapid_download` and reported to the risk engine as a
+  `least_privilege_violation`.
+- **The CrimGuard dashboard shows the score with adjustments applied**, the number limiting, uploads
+  and the step-up act on, with each adjustment and its reason listed on the person's record.
+
+The window, the points and the code's life are in `src/security/above-clearance.js`.
+
 ### Starting access
 
 Two ways access arrives without anyone granting it file by file.
@@ -513,7 +537,7 @@ src/
                          pages.js (HTML, static, health), crawl.js (robots, sitemap, llms.txt)
   security/              access.js (roles, clearance, who may change access),
                          session-gate.js (freeze and both step-ups, and what stays open during them),
-                         departure.js, risk-signals.js, genai.js, ai-analyst.js,
+                         departure.js, above-clearance.js, risk-signals.js, genai.js, ai-analyst.js,
                          email-reputation.js, proof-of-work.js, limits.js, provisioning.js,
                          passwords.js (pepper + Argon2id), password-policy.js, sessions.js,
                          throttle.js, tokens.js, headers.js
@@ -526,7 +550,8 @@ src/
   db/                    index.js (open, pragmas), migrate.js, errors.js, and one query module per area:
                          users.js, sessions.js, projects.js, files.js (and who can see
                          a file), roles.js, people.js (the dashboard), risk.js,
-                         departures.js (leaving dates and access requests), audit.js
+                         departures.js (leaving dates and access requests), download-mfa.js
+                         (codes for downloads above clearance), audit.js
   telemetry/             the risk pipeline: coverage.js (how each of the 100 variables is
                          collected), subjects.js, events.js, ingest.js, features.js,
                          snapshots.js, scoring.js, honeytokens.js, patterns.js, geo.js
@@ -567,7 +592,8 @@ docker-compose.yml       one-command self-hosting with a data volume
 | `GET /api/files/shared`                | signed in, files other people shared with you or your role |
 | `POST /api/files/:fileId/access-request` `{reason}` | signed in, only for a file the departure gate is holding |
 | `GET /api/me/access-requests`          | signed in, your own requests and what came back |
-| `GET /api/files/:fileId/download`      | anyone who may see the file; otherwise 404 |
+| `GET /api/files/:fileId/download`      | anyone who may see the file; otherwise 404. Above your clearance, 403 `download_mfa_required` until a code is in |
+| `POST /api/files/:fileId/download/verify` `{code}` | signed in, a file above your clearance; the code is good for one download on this session |
 | `GET /api/files/:fileId/access`        | the owner, admins and the CEO |
 | `PUT /api/files/:fileId/access` `{confidentiality, roles, people}` | admin or CEO, files up to their clearance; replaces the whole list |
 | `GET /api/roles`                       | signed in; admins and the CEO also get member counts |
