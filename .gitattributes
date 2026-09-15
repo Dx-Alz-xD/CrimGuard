@@ -1,0 +1,10 @@
+# Line endings are settled here rather than by each machine's core.autocrlf, so a
+# checkout on Windows and one on Linux hand git the same bytes.
+* text=auto eol=lf
+
+# Binaries: never line-ending converted, never diffed, never auto-merged.
+# database/crimguard.db is a generated seed - a conflict in it is settled by
+# rebuilding it with `npm run db:sqlite`, never by merging.
+*.png binary
+*.pdf binary
+*.db  binary
