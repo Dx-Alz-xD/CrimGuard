@@ -164,16 +164,16 @@ with them, the devices they are signed in on, their activity and their risk tren
 
 ## Deploy
 
-Red runs as a single Docker container with its SQLite database on a volume at
-`/data`. **Attach persistent storage at `/data`**, or every redeploy wipes all
-accounts and projects.
+Red is one Node process with its SQLite database on disk, and no runtime
+dependencies to install. **Point `RED_DB` at persistent storage**, or every
+redeploy wipes all accounts and projects.
 
 ### Environment variables
 
 | Variable                   | Default                 | Notes |
 | -------------------------- | ----------------------- | ----- |
 | `RED_PASSWORD_PEPPER`      | none (required in prod) | Secret mixed into every password hash, at least 32 characters. Generate with `openssl rand -base64 48`. **Keep it out of database backups, and never change or lose it:** doing so invalidates every password. |
-| `RED_PASSWORD_PEPPER_FILE` | none                    | Read the pepper from a file instead, e.g. a Docker secret. |
+| `RED_PASSWORD_PEPPER_FILE` | none                    | Read the pepper from a file instead, e.g. a secret mounted by the platform. |
 | `RED_ADMIN_EMAIL`          | `admin@red.local`       | First admin's email. Only used when no admin exists yet. |
 | `RED_ADMIN_PASSWORD`       | none (required in prod) | First admin's password, at least 12 characters. |
 | `RED_ADMIN_NAME`           | `Red Admin`             | |
@@ -185,8 +185,8 @@ accounts and projects.
 | `RED_MAX_FILE_MB`    | `10`                     | Largest file someone can upload to a project, in megabytes (up to 100). |
 | `RED_SECURE_COOKIES`       | off                     | Set to `1` to always mark cookies Secure. Behind an HTTPS proxy Red detects this on its own. |
 | `PORT`                     | `3000`                  | Most platforms set this for you. |
-| `HOST`                     | `0.0.0.0` in the image  | `127.0.0.1` when run with `npm start` outside production. |
-| `RED_DB`                   | `/data/red.db` in image | Path to the SQLite file. `data/red.db` locally. |
+| `HOST`                     | `0.0.0.0` in production | `127.0.0.1` when run with `npm start` outside production. |
+| `RED_DB`                   | `data/red.db`           | Path to the SQLite file. In production, put it on a persistent disk. |
 | `CRIMGUARD_DATABASE_URL`   | none                    | PostgreSQL for the risk database. Without it, a SQLite copy is used, seeded from `database/crimguard.db`. |
 | `CRIMGUARD_DB`             | `auto`                  | `postgres` to refuse the SQLite fallback, `sqlite` to skip PostgreSQL entirely. |
 | `CRIMGUARD_SQLITE_PATH`    | `data/crimguard.db`     | Where the SQLite copy of the risk database lives. Never the tracked `database/crimguard.db`: a running server writes to it. |
@@ -200,30 +200,42 @@ accounts and projects.
 The admin and CEO variables only matter until someone holds that role. After that,
 manage people from **People & roles** in the admin console.
 
-### Any server with Docker
+### Any server with Node
+
+Copy the repository to the machine, make sure `node --version` is 24.7 or newer,
+and start it:
 
 ```bash
+NODE_ENV=production \
+RED_DB=/var/lib/red/red.db \
 RED_ADMIN_EMAIL=you@example.com \
 RED_ADMIN_PASSWORD='a-long-admin-password' \
 RED_CEO_EMAIL=ceo@example.com \
 RED_CEO_PASSWORD='a-different-long-password' \
 RED_PASSWORD_PEPPER="$(openssl rand -base64 48)" \
-docker compose up -d --build
+npm start
 ```
 
+Nothing needs installing first: there are no runtime dependencies. Run
+`npm ci --omit=dev` only if you want the optional `pg` driver for a PostgreSQL
+risk database.
+
 Save the pepper somewhere safe (a password manager or secrets store) before you
-run this. Put Red behind HTTPS (Caddy, nginx, or your platform's proxy). Session
-cookies become `Secure` and `__Host-` prefixed when the proxy sends
+run this, and keep the process under a supervisor such as systemd so it comes back
+after a reboot. Put Red behind HTTPS (Caddy, nginx, or your platform's proxy).
+Session cookies become `Secure` and `__Host-` prefixed when the proxy sends
 `X-Forwarded-Proto: https`.
 
 ### Railway, Render, Fly.io and similar
 
-1. Point the service at the folder containing the `Dockerfile`. It builds from that.
-2. Add a persistent volume or disk mounted at `/data`.
-3. Set `RED_PASSWORD_PEPPER`, `RED_ADMIN_EMAIL`, `RED_ADMIN_PASSWORD`, `RED_CEO_EMAIL`
+1. Point the service at this repository. It needs no build step; set the build
+   command to `npm ci --omit=dev` only if you want the optional PostgreSQL driver.
+2. Set the start command to `npm start`.
+3. Add a persistent volume or disk, and set `RED_DB` to a path on it.
+4. Set `RED_PASSWORD_PEPPER`, `RED_ADMIN_EMAIL`, `RED_ADMIN_PASSWORD`, `RED_CEO_EMAIL`
    and `RED_CEO_PASSWORD` as secrets.
-4. Set `RED_TRUST_PROXY=1`.
-5. Set the health check path to `/healthz`.
+5. Set `RED_TRUST_PROXY=1`.
+6. Set the health check path to `/healthz`.
 
 Run a single instance. SQLite lives on one machine's disk, so scaling to
 several replicas would give each one its own separate database.
@@ -549,15 +561,20 @@ src/
                          Origin, believed only as far as they must be)
   db/                    index.js (open, pragmas), migrate.js, errors.js, and one query module per area:
                          users.js, sessions.js, projects.js, files.js (and who can see
-                         a file), roles.js, people.js (the dashboard), risk.js,
+                         a file), roles.js, people.js (the dashboard), risk.js, signals.js
+                         (risk adjustments, email reputation, the OTP demand),
                          departures.js (leaving dates and access requests), download-mfa.js
                          (codes for downloads above clearance), audit.js
-  telemetry/             the risk pipeline: coverage.js (how each of the 100 variables is
-                         collected), subjects.js, events.js, ingest.js, features.js,
-                         snapshots.js, scoring.js, honeytokens.js, patterns.js, geo.js
+                         crimguard.js connects the risk database, PostgreSQL or the SQLite
+                         fallback; sqlite-schema.js builds that fallback from the same SQL
+  telemetry/             the risk pipeline: index.js (the facade routes call, and the serial
+                         queue that keeps it off the request path), coverage.js (how each of the
+                         100 variables is collected), subjects.js, events.js, ingest.js,
+                         features.js, snapshots.js, scoring.js, honeytokens.js, patterns.js, geo.js
 database/
   web/migrations/        SQLite schema for the website, applied on start
-  crimguard/             PostgreSQL schema for the CrimGuard detection platform
+  crimguard/             PostgreSQL schema for the CrimGuard detection platform, and
+                         sqlite/ for the few views SQLite cannot express the same way
 crimguard/risk/          the scoring formula (see its own README)
 public/                  pages, 404.html, and static/: app.js, crimguard.js (the dashboard),
                          event-console.js (its live console), telemetry.js (the collector),
@@ -568,8 +585,7 @@ scripts/demo/            build.js and demo-api.js, which make the static demo
 scripts/db/              status.js, build-sqlite.js, seed-risk.js, seed-demo.js
 demo/                    the generated static demo (npm run build:demo)
 data/                    local database and development pepper (git-ignored)
-Dockerfile               production image, runs as non-root, health check
-docker-compose.yml       one-command self-hosting with a data volume
+docs/                    the explainer PDF, its figures, and the scripts that build them
 ```
 
 ### API
@@ -578,11 +594,17 @@ docker-compose.yml       one-command self-hosting with a data volume
 | -------------------------------------- | --- |
 | `POST /api/signup`                     | anyone, creates an Intern |
 | `POST /api/login` `{portal}`           | anyone |
+| `GET /api/auth/challenge`              | anyone; the proof-of-work a sign-in has to solve when one is being asked for |
 | `POST /api/logout`, `GET /api/me`      | signed in |
 | `PATCH /api/me/password` `{currentPassword, newPassword}` | signed in; new session here, signs out other devices |
 | `GET/PATCH /api/me/profile` `{name, jobTitle, organization, bio}` | signed in, own profile |
+| `GET/POST /api/me/step-up` `{code}`    | signed in; whether this session owes a code, and answers it |
+| `GET /api/identity/status`             | signed in; whether this session owes a password confirmation, or is frozen |
+| `POST /api/identity/step-up` `{password}` | signed in; confirms the owner is the one on the session |
 | `GET/POST /api/projects`               | signed in, own projects only |
 | `PATCH/DELETE /api/projects/:id`       | signed in, own projects only |
+| `GET /api/projects/export`             | signed in; everything the account owns as one JSON download, and the only way data leaves Red in bulk |
+| `GET/PUT /api/projects/:id/access` `{roles}` | own projects; which role groups the project is shared with. A grant never reaches past that role's clearance |
 | `GET /api/projects/:id/files`          | signed in, own projects only |
 | `POST /api/projects/:id/files`         | own projects; raw bytes with `X-File-Name` (URL-encoded) |
 | `GET /api/projects/:id/files/:fileId/download` | own projects; always sent as a download |
@@ -590,6 +612,8 @@ docker-compose.yml       one-command self-hosting with a data volume
 | `PUT /api/projects/:id/files/:fileId/content` | own projects; raw bytes, replaces the contents |
 | `DELETE /api/projects/:id/files/:fileId` | own projects |
 | `GET /api/files/shared`                | signed in, files other people shared with you or your role |
+| `GET /api/files/shared/:id`            | signed in; opens one. A decoy answers here too, and opening one trips it |
+| `POST /api/files/shared/integrity` `{action, fingerprints}` | signed in; clipboard matches the page noticed, never the text itself |
 | `POST /api/files/:fileId/access-request` `{reason}` | signed in, only for a file the departure gate is holding |
 | `GET /api/me/access-requests`          | signed in, your own requests and what came back |
 | `GET /api/files/:fileId/download`      | anyone who may see the file; otherwise 404. Above your clearance, 403 `download_mfa_required` until a code is in |
@@ -610,17 +634,36 @@ docker-compose.yml       one-command self-hosting with a data volume
 | `POST /api/admin/access-requests/:id/decision` `{decision, note}` | admin or CEO, files up to their clearance; approve or deny |
 | `GET /api/crimguard/overview`          | admin or CEO, everyone with their counts, presence and score |
 | `GET /api/crimguard/people/:id`        | admin or CEO, one person's record; file names above your clearance left out |
+| `GET /api/crimguard/people/:id/variables` | admin; that person's 100 variables as they stand, for the test dialog to start from |
+| `PUT /api/crimguard/people/:id/override` | admin; force variable values or a score for a date, so limiting and the traps can be demonstrated |
+| `PATCH /api/crimguard/people/:id/limit` `{enabled}` | admin; turns risk limiting off for one account. Never your own, and only the CEO may do it to an admin |
 | `POST /api/telemetry`                  | signed in, own behaviour only |
 | `GET /api/me/risk`                     | signed in, own score and all 100 variables |
+| `GET /api/me/egress`                   | signed in; what was reported about your own egress, and what it counted for |
+| `POST /api/telemetry/egress`           | a signed-in session about itself, or an agent holding `X-Red-Agent-Key` about anyone. Never content, only how much and where to |
+| `POST /api/biometrics/windows`         | signed in; one window of typing and pointer use. The session says whose it is, never the body |
 | `GET /api/admin/risk/overview`         | admin, everyone's latest score and open alerts |
 | `GET /api/admin/risk/people/:id`       | admin, one person's 100 variables |
 | `GET /api/admin/risk/catalog`          | admin, the catalog and how Red collects each entry |
+| `GET /api/admin/risk/people/:id/explain` | admin; the same numbers in a sentence, when `GROQ_API_KEY` is set. The page is unchanged without it |
+| `GET /api/admin/risk/people/:id/hr`    | admin, the HR timeline behind the edit dialog |
 | `POST /api/admin/risk/run` `{date}`    | admin, recompute and rescore a day |
 | `PATCH /api/admin/risk/people/:id`     | admin, employment type, hire and leaving dates |
 | `POST /api/admin/risk/people/:id/hr-events` | admin, records a review, action or notice |
 | `POST/DELETE /api/admin/risk/people/:id/leave` | admin, leave periods |
+| `GET /api/admin/egress`                | admin or CEO, the shadow-AI feed |
+| `GET /api/admin/egress/triage`         | admin, that feed triaged in writing, when `GROQ_API_KEY` is set |
+| `GET /api/admin/identity`              | admin, accounts under a response and the policies behind them |
+| `PATCH /api/admin/identity/policies/:id` `{isEnabled, minFinalScore, requiresApproval}` | admin |
+| `POST /api/admin/identity/actions/:id/approve` | admin, carries out an action that was waiting on a person |
+| `POST /api/admin/identity/actions/:id/decline` | admin, drops it instead |
+| `POST /api/admin/identity/people/:id/restore` `{note}` | admin, lifts a freeze |
+| `GET /api/admin/honeytrap/people/:id`  | admin, a person's decoy plantings and any trips |
+| `POST /api/admin/honeytrap/run`        | admin, applies the decoy policy to everyone now instead of waiting for the next pass |
+| `GET /api/admin/biometrics/people/:id` | admin, a person's typing profile and recent verdicts |
 | `GET /healthz`                         | anyone |
 | `GET /robots.txt`, `/sitemap.xml`, `/llms.txt` | anyone; public pages only |
+| `GET /api/internal/v1/credentials`, `/exports`, `/billing/customers`, `/deploy` | nobody. Traps: they answer like a real API that does not recognise the key, and any canary presented as one trips it |
 
 Errors are `{ "error": "message" }`, plus a `code` for `password_change_required` (403),
 `not_privileged` (403, the account no longer has the admin console), `rate_limited`

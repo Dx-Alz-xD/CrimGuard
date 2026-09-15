@@ -1,7 +1,7 @@
 -- =========================================================
 -- CrimGuard — 06: Risk feature snapshots (the 100 variables)
 -- One snapshot per user per period (day by default). Supersedes the
--- single wide table in trustline_risk_variables.sql.
+-- single wide table the first draft used.
 --
 -- Split into one table per category, 1:1 with the snapshot header,
 -- because each category is fed by a different source on its own

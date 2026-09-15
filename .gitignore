@@ -11,3 +11,7 @@ node_modules/
 *.db-wal
 *.db-shm
 *.db.tmp
+
+# the figure and PDF scripts in docs/ are Python
+__pycache__/
+*.pyc

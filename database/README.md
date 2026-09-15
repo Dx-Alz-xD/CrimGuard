@@ -5,7 +5,7 @@ This folder holds two separate schemas.
 | Folder       | Engine        | Used by                 | How it's applied                        |
 | ------------ | ------------- | ----------------------- | --------------------------------------- |
 | `web/`       | SQLite        | the Red website         | automatically, every time the server starts |
-| `crimguard/` | PostgreSQL 15+ | the CrimGuard detection platform | by hand, `psql -f` in numeric order |
+| `crimguard/` | PostgreSQL 15+, or SQLite | the CrimGuard risk pipeline | `psql -f` in numeric order for PostgreSQL; `npm run db:sqlite` builds the SQLite copy from the same files |
 
 ## `web/`: the website database
 
@@ -19,12 +19,18 @@ Never edit a migration that has already shipped.
 | Sign-up    | `users`, `user_credentials`, `user_profiles`   | An account is created in all three at once. |
 | Login      | `user_credentials`, `sessions`, `auth_throttle` | Password hashes, signed-in devices, failed-attempt counters. |
 | User data  | `users`, `user_profiles`                       | Name, email, role, job title, team, bio, last sign-in. |
-| Projects   | `projects`                                     | Each project belongs to one account (`owner_id`). |
+| Projects   | `projects`, `project_files`                    | Each project belongs to one account (`owner_id`); files live in the database beside it. |
+| Roles      | `roles`                                        | The four built-in roles and any the CEO adds, each with a clearance from 1 to 5. |
+| File access | `file_role_grants`, `file_user_grants`, `project_role_grants` | Who a file or a whole project is shared with, by role or by name. |
+| Risk limiting | `user_risk_state`, `risk_limit_exemptions`  | The score access is narrowed from, and the accounts an admin has exempted. |
+| Leaving    | `user_departure_state`, `file_access_requests` | Leaving dates, and the queue of requests the departure gate produces. |
+| Step-up    | `risk_adjustments`, `email_reputation`, `mfa_verifications`, `download_verifications` | What a passed challenge is worth, address reputation, and codes owed or already answered. |
 | Security   | `audit_log`                                    | Sign-ins, failures, password and role changes, deletions. |
 
 What each table stores:
 
-- **`users`**: who someone is and their role (`user` or `admin`). No secrets.
+- **`users`**: who someone is and their role, which is a row in `roles` carrying a clearance
+  from 1 to 5. No secrets.
 - **`user_credentials`**: one row per account. `password_hash` is an Argon2id PHC string
   (see below). `must_change_password` is set when an admin chose the password.
 - **`user_profiles`**: optional details the person edits themselves.
@@ -62,7 +68,11 @@ The database file is created with `0600` permissions. The server also turns on S
 
 PostgreSQL schema for insider-risk detection: tenants and people, the context ledger
 (projects, tickets, HR events), raw activity events, the 100-variable feature catalog, daily
-feature snapshots, and anomaly/alert/response tables. It is not used by the website yet.
+feature snapshots, and anomaly/alert/response tables.
+
+The website fills it as people use Red. `src/telemetry/` writes the events and the daily
+snapshots, `src/db/crimguard.js` opens the connection, and Red carries on unchanged if that
+connection is not there.
 
 The risk formula that fills `risk_scores` lives in [`crimguard/risk/`](../crimguard/risk/README.md).
 
@@ -70,5 +80,8 @@ The risk formula that fills `risk_scores` lives in [`crimguard/risk/`](../crimgu
 for f in database/crimguard/0*.sql; do psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"; done
 ```
 
-`crimguard/archive/trustline_risk_variables.sql` is the earlier single-table draft that
-`06_feature_snapshots.sql` replaced. It's kept for reference only.
+Without a PostgreSQL server, the same schema is used as SQLite. `src/db/sqlite-schema.js`
+translates these files rather than keeping a second copy, so the two cannot drift apart, and
+throws on anything it does not recognise instead of quietly producing a different schema.
+The few views and triggers that need PostgreSQL-only syntax have hand-written SQLite versions
+in `crimguard/sqlite/`, and each one keeps the same output columns.
