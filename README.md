@@ -1,672 +1,1374 @@
-# Red
+# CrimGuard
 
-A project workspace with two separate logins: one for interns and employees, and the
-admin console for admins and the CEO. Every account has its own projects and files, and
-admins and the CEO decide who holds which role and who can open which file.
+### Insider-Threat Detection Built Into a Working File-Sharing Platform
 
-- **User login** (`/login`): create, edit and track your own projects, upload files to
-  them, open files shared with you under **Shared with me**, edit your profile, and
-  change your own password.
-- **Admin login** (`/admin/login`): your own projects, plus **People & roles**, where
-  you add people, change roles, reset passwords and delete accounts, and the CEO creates
-  roles; **Activity**, a log of sign-ins and account changes; **CrimGuard**, a live
-  dashboard of everyone's projects, files, devices and activity; and **Risk**, the
-  insider-risk console described below.
+**CrimGuard** is an insider-threat detection platform integrated directly into a functional file-sharing system.
 
-Red also scores how each account behaves against the 100 variables in the CrimGuard
-feature catalog, to catch data being taken out of it. Everyone can read their own score
-from the **Risk** button in the bottom-left corner of any signed-in page; see
-[Insider risk](#insider-risk).
+Instead of only asking **"Is this activity unusual?"**, CrimGuard asks a more important question:
 
-No npm dependencies. Red uses Node's built-in `node:sqlite` and `crypto.argon2`, so it
-only needs **Node.js 24.7 or newer** (developed on Node 26).
+> **"Is there a legitimate reason for this activity?"**
+
+The system continuously evaluates user behaviour, compares it against the user's own historical baseline, considers organizational context, and dynamically adjusts access when risk increases.
 
 ---
 
-## Run locally
+## Table of Contents
 
-```bash
-npm start
-```
+* [Overview](#overview)
+* [The Problem](#the-problem)
+* [How CrimGuard Works](#how-crimguard-works)
+* [Red and CrimGuard](#red-and-crimguard)
+* [The Risk Score](#the-risk-score)
+* [The 100 Risk Variables](#the-100-risk-variables)
+* [Personal Baselines](#personal-baselines)
+* [Context-Aware Detection](#context-aware-detection)
+* [Risk Escalation](#risk-escalation)
+* [Decoys and Honeytraps](#decoys-and-honeytraps)
+* [Behavioural Biometrics](#behavioural-biometrics)
+* [Identity Throttle](#identity-throttle)
+* [Access Control](#access-control)
+* [Departure Protection](#departure-protection)
+* [Download Protection](#download-protection)
+* [Shadow AI Detection](#shadow-ai-detection)
+* [Architecture](#architecture)
+* [Privacy](#privacy)
+* [Validation](#validation)
+* [Key Results](#key-results)
+* [Admin Dashboard](#admin-dashboard)
+* [Limitations](#limitations)
+* [Project Philosophy](#project-philosophy)
 
-Open <http://localhost:3000>.
+---
 
-On first start Red creates `data/` with the database and a development password pepper,
-and prints a **one-time password** for the admin account `admin@red.local` and another
-for the CEO account `ceo@red.local`. Sign in with either at `/admin/login`, and you'll be
-asked to choose your own password straight away.
+# Overview
 
-```bash
-npm test
-```
+Traditional cybersecurity focuses heavily on preventing unauthorized people from entering a system.
 
-To see the risk console with something in it, give an account a history:
+CrimGuard focuses on a different problem:
 
-```bash
-npm run db:seed-risk
-```
+**What happens when the person already has legitimate access?**
 
-## Static demo
+An employee does not need to break through a firewall to steal data. They may already have permission to access the files they want.
 
-`demo/` is a copy of Red's pages that runs without the server. Open
-`demo/index.html` in a browser, or publish the folder on a static host such as
-GitHub Pages. A small script stands in for the API and keeps everything in the
-browser's local storage, so it is for trying Red out, never for real accounts.
-Both login pages show the demo sign-ins.
+They simply log in normally.
 
-Rebuild it after changing anything in `public/`:
+That makes insider threats difficult to detect because malicious behaviour can look exactly like legitimate work.
 
-```bash
-npm run build:demo
+CrimGuard addresses this by combining:
+
+* Behavioural analysis
+* Personal historical baselines
+* File and data-access monitoring
+* Organizational context
+* Role and clearance information
+* Behavioural biometrics
+* Decoy files and honeytraps
+* Risk-based access control
+* Departure monitoring
+* Explainable risk scoring
+
+The result is a continuous loop:
+
+```text
+User Activity
+      ↓
+Behaviour Collection
+      ↓
+100 Risk Variables
+      ↓
+Personal + Contextual Analysis
+      ↓
+Risk Score (0–100)
+      ↓
+Policy Decision
+      ↓
+Access / Verification / Freeze
+      ↓
+New Behaviour
+      ↺
 ```
 
 ---
 
-## How roles work
+# The Problem
 
-Every role has a **clearance** from 1 to 5, and every file a **confidentiality** on the
-same scale: 1 Open, 2 Internal, 3 Confidential, 4 Restricted, 5 Secret.
+Most security systems are good at identifying activity that is statistically unusual.
 
-| Role     | Clearance | Signs in at    | Can do |
-| -------- | --------- | -------------- | ------ |
-| Intern   | 1         | `/login`       | Their own projects and files, files shared with them, their profile and password |
-| Employee | 2         | `/login`       | The same |
-| Admin    | 4         | `/admin/login` | All of the above, plus add people and give them any role up to Admin, reset passwords, delete accounts, read the activity log, open anyone's files up to Restricted and choose who can see them, and use CrimGuard |
-| CEO      | 5         | `/admin/login` | Everything an admin can do, for every file including Secret ones, plus create, change and delete roles and make someone CEO |
+That is not necessarily the same thing as identifying malicious behaviour.
 
-- **The CEO account is created on first start**, the same way as the first admin (see
-  [Run locally](#run-locally) and the `RED_CEO_*` variables).
-- **Sign-up always creates an Intern.** Admins and the CEO give out roles up to their own
-  clearance, so only the CEO can make someone CEO.
-- **Nobody can act on an account with more clearance than their own.** An admin can't
-  change the CEO's role, reset the CEO's password or delete the CEO.
-- **The CEO can add roles**, such as Contractors at clearance 1 or Analysts at 3. Roles
-  the CEO adds are for sharing files and never open the admin console. Built-in roles
-  can't be changed, and a role can only be deleted once nobody holds it.
-- **Each portal only accepts its own roles.** Admins and the CEO sign in at the admin
-  login and everyone else at the user login; the wrong one says which to use.
-- **Role changes apply immediately**, including to people who are already signed in.
-- **Nobody can change their own role or delete their own account**, so there is always
-  at least one admin and one CEO.
-- **Passwords an admin chooses are temporary.** Someone added by an admin, or whose
-  password an admin reset, must choose their own password when they next sign in.
-  Until they do, the API refuses everything except changing the password or logging out.
-- **Changing your password** asks for the current one, gives this device a new
-  session, and signs out your other devices.
-- **When an admin resets someone's password, that person is signed out everywhere.**
-- **Deleting a person also deletes their profile, projects, files and sessions.** It can't be undone.
-- **Projects hold files.** Open a project to upload files, as many at once as you like
-  (drag and drop works), then download, rename, replace with a new version, or delete
-  them. Each file can be up to 10 MB (set `RED_MAX_FILE_MB` to change it), names are
-  unique within a project, and the contents are stored in the database, so the data
-  volume holds everything.
+Consider two users.
 
-## Who can open a file
+### Case A — Legitimate activity
 
-- **Its owner always can, and so can the CEO.** Admins can open any file up to
-  Restricted. Everyone else needs the file shared with them.
-- **Admins and the CEO share files** from the **Access** button on a file, in a project
-  or in CrimGuard. Sharing with a **role** lets everyone in it open the file while the
-  role's clearance covers the file's confidentiality: a Confidential file shared with
-  Employees stays closed to them until it is lowered to Internal. Sharing with a
-  **person** lets them open it at any confidentiality, though each download of a file
-  above their clearance asks for a code first (see
-  [Downloading above your clearance](#downloading-above-your-clearance)).
-- **New files are Internal and shared with nobody.** Existing files became Internal
-  when roles arrived.
-- **Only the CEO can mark a file Secret**, or change who can see a Secret file. An admin
-  the CEO shares a Secret file with can open it, but not change who else can.
-- **A file someone can't see is "not found"** to them, so its existence isn't given away.
-- **The rule is written once**, as SQL in `src/db/files.js`; every list, download and
-  dashboard goes through it. The rest of the access rules are in `src/security/access.js`.
-- **Changing who can see a file, and downloading someone else's file, go in the
-  activity log.** File names never do.
+An engineer normally accesses approximately **15 files per day**.
 
-## CrimGuard dashboard
+One day they access **608 files**.
 
-`/crimguard`, for admins and the CEO, carries CrimGuard's own name. It lists everyone
-with an account, with their role, projects, files, storage, whether they are online and,
-when the risk database is connected, their latest risk score. Choosing someone opens their
-record: profile, every project and file with its confidentiality and sharing, files shared
-with them, the devices they are signed in on, their activity and their risk trend.
+That is an enormous spike.
 
-- **It stays live.** The list refreshes every 15 seconds and the open record every 5,
-  while the tab is visible; a record only redraws when something in it changed.
-- **Files above your clearance are counted, never named**, so an admin can see that
-  someone holds Secret files without learning what they are.
-- **Looking is recorded.** Opening someone's record goes in the activity log, at most
-  once every ten minutes per viewer and person, so leaving the page open doesn't flood it.
-- **A live console sits underneath.** The security activity log streams into a terminal-style
-  view as events are written. It only reads: `filter`, `level`, `pause`, `clear` and the other
-  commands (`help` lists them) change what the view shows, and nothing typed there is sent to
-  the server. There is deliberately no shell - a dashboard holding everyone's risk record is the
-  last place to put one.
+A conventional anomaly detector may immediately flag the account.
+
+However, there is an approved migration ticket requiring approximately 600 files to be accessed.
+
+CrimGuard therefore treats the activity as largely explained.
+
+**Risk score: 17.8**
 
 ---
 
-## Security
+### Case B — Insider theft
 
-| Area | What Red does |
-| ---- | ------------- |
-| Password storage | HMAC-SHA-256 with a secret pepper, then Argon2id (64 MiB, t=3, p=4). Hashes sit in their own table. Older scrypt hashes are upgraded at sign-in. See [`database/README.md`](database/README.md#how-passwords-are-stored). |
-| Password policy | 12 to 256 characters, no composition rules, common and sequential passwords rejected, can't be based on your name or email. |
-| Brute force | After 5 failed sign-ins for one email in 15 minutes, that email is paused for 15 minutes. Limits also apply per IP address, to sign-ups, and to wrong current passwords. Unknown emails get the same response and timing as wrong passwords. |
-| Sessions | 256-bit random tokens, stored only as SHA-256. New token at every sign-in and password change. Intern and employee sessions last 24 hours idle / 7 days total; admin and CEO sessions 2 hours idle / 12 hours total. At most 10 per account. |
-| Cookies | `HttpOnly`, `SameSite=Strict`. Over HTTPS: `Secure` with the `__Host-` prefix, and cookies without the prefix are ignored. |
-| CSRF | Writes must be JSON, and requests whose `Origin` or `Sec-Fetch-Site` is another site are refused. |
-| Headers | Strict CSP (`default-src 'none'`), HSTS over HTTPS, `X-Frame-Options: DENY`, `nosniff`, `no-referrer`, COOP/CORP, Permissions-Policy. |
-| Input | Size-limited JSON bodies, validated fields, control and bidi-override characters removed from names and text. All user text is rendered with `textContent`, never as HTML. |
-| Audit | Security events in `audit_log`, visible to admins and the CEO under **Activity**: sign-ins, role and password changes, roles created or changed, changes to who can see a file, downloads of other people's files, and records opened in CrimGuard. No secrets or file names are logged. |
-| Access | Roles with clearance and files with confidentiality, checked on the server for every list and download (see [Who can open a file](#who-can-open-a-file)). |
-| Server | Request and header timeouts, database and pepper files readable by the server's user only, no default admin or CEO password. |
+Another employee normally accesses approximately **15 files per day**.
+
+Their activity gradually increases:
+
+```text
+15 → 18 → 22 → 27 → 34 → 41 → 50 → 60 → 70
+```
+
+This happens over approximately three months.
+
+There is:
+
+* No migration
+* No project
+* No role change
+* No approved ticket
+
+There is no dramatic spike.
+
+A traditional anomaly detector comparing activity against recent behaviour may never trigger.
+
+CrimGuard uses a **frozen historical baseline** in addition to the recent baseline.
+
+This allows it to detect gradual behavioural drift.
+
+**Risk score: 72.9**
+
+The system detects the theft approximately **7.5 weeks into the gradual escalation**.
 
 ---
 
-## Deploy
+# Red and CrimGuard
 
-Red is one Node process with its SQLite database on disk, and no runtime
-dependencies to install. **Point `RED_DB` at persistent storage**, or every
-redeploy wipes all accounts and projects.
+CrimGuard consists of two closely integrated systems.
 
-### Environment variables
+| Component     | Purpose                                         |
+| ------------- | ----------------------------------------------- |
+| **Red**       | The actual file-sharing platform                |
+| **CrimGuard** | The security and insider-threat detection layer |
 
-| Variable                   | Default                 | Notes |
-| -------------------------- | ----------------------- | ----- |
-| `RED_PASSWORD_PEPPER`      | none (required in prod) | Secret mixed into every password hash, at least 32 characters. Generate with `openssl rand -base64 48`. **Keep it out of database backups, and never change or lose it:** doing so invalidates every password. |
-| `RED_PASSWORD_PEPPER_FILE` | none                    | Read the pepper from a file instead, e.g. a secret mounted by the platform. |
-| `RED_ADMIN_EMAIL`          | `admin@red.local`       | First admin's email. Only used when no admin exists yet. |
-| `RED_ADMIN_PASSWORD`       | none (required in prod) | First admin's password, at least 12 characters. |
-| `RED_ADMIN_NAME`           | `Red Admin`             | |
-| `RED_CEO_EMAIL`            | `ceo@red.local`         | The CEO's email. Only used when no CEO exists yet, and must differ from `RED_ADMIN_EMAIL`. |
-| `RED_CEO_PASSWORD`         | none (required in prod) | The CEO's password, at least 12 characters. |
-| `RED_CEO_NAME`             | `Red CEO`               | |
-| `RED_TRUST_PROXY`          | off                     | Set to `1` behind exactly one reverse proxy, so rate limits and the activity log use the client address from `X-Forwarded-For`. Leave off otherwise, or clients could spoof it. |
-| `RED_PUBLIC_ORIGIN`        | none                    | Where the site is published, e.g. `https://red.example.com`, for the absolute URLs in `sitemap.xml` and `llms.txt`. Without it they are written against the request's own host, after checking it looks like one, and are not cached publicly. |
-| `RED_MAX_FILE_MB`    | `10`                     | Largest file someone can upload to a project, in megabytes (up to 100). |
-| `RED_SECURE_COOKIES`       | off                     | Set to `1` to always mark cookies Secure. Behind an HTTPS proxy Red detects this on its own. |
-| `PORT`                     | `3000`                  | Most platforms set this for you. |
-| `HOST`                     | `0.0.0.0` in production | `127.0.0.1` when run with `npm start` outside production. |
-| `RED_DB`                   | `data/red.db`           | Path to the SQLite file. In production, put it on a persistent disk. |
-| `CRIMGUARD_DATABASE_URL`   | none                    | PostgreSQL for the risk database. Without it, a SQLite copy is used, seeded from `database/crimguard.db`. |
-| `CRIMGUARD_DB`             | `auto`                  | `postgres` to refuse the SQLite fallback, `sqlite` to skip PostgreSQL entirely. |
-| `CRIMGUARD_SQLITE_PATH`    | `data/crimguard.db`     | Where the SQLite copy of the risk database lives. Never the tracked `database/crimguard.db`: a running server writes to it. |
-| `RED_HONEYTOKEN_SCORE`     | `40`                    | Risk score at which a decoy project is planted for an account. |
-| `RED_MAILCHECK_KEY`        | none                    | RapidAPI key for mailcheck, which answers whether an address's domain is disposable, forwarded, blocklisted or undeliverable. Without it that half of the check never runs; the breach check needs no key. |
-| `RED_EMAIL_CHECKS`         | on                      | Set to `0` to send no address anywhere: neither the breach check nor the domain check runs. |
-| `RED_EGRESS_KEY`           | none                    | Key an endpoint agent, managed extension or DLP proxy sends as `X-Red-Agent-Key` to report egress for any account. Without it only signed-in sessions can report, and only about themselves. |
-| `GROQ_API_KEY`             | none                    | Turns on written score explanations and egress triage. The model is sent catalogue keys and numbers only, never names, files or content (`src/security/ai-analyst.js`). `GROQ_MODEL` picks the model. |
-| `RED_ALLOW_DEMO_OTP`       | off                     | The step-up still accepts the fixed demo code `123456`. Production refuses to start unless this is `1`, so a build with a guessable second factor cannot ship by accident. |
+### Red
 
-The admin and CEO variables only matter until someone holds that role. After that,
-manage people from **People & roles** in the admin console.
+Red provides the normal working environment:
 
-### Any server with Node
+* Accounts
+* Authentication
+* Projects
+* Files
+* File sharing
+* Permissions
+* Downloads
+* Activity logs
 
-Copy the repository to the machine, make sure `node --version` is 24.7 or newer,
-and start it:
+Users interact with Red as they normally would with a file-sharing platform.
 
-```bash
-NODE_ENV=production \
-RED_DB=/var/lib/red/red.db \
-RED_ADMIN_EMAIL=you@example.com \
-RED_ADMIN_PASSWORD='a-long-admin-password' \
-RED_CEO_EMAIL=ceo@example.com \
-RED_CEO_PASSWORD='a-different-long-password' \
-RED_PASSWORD_PEPPER="$(openssl rand -base64 48)" \
-npm start
-```
+### CrimGuard
 
-Nothing needs installing first: there are no runtime dependencies. Run
-`npm ci --omit=dev` only if you want the optional `pg` driver for a PostgreSQL
-risk database.
+CrimGuard continuously observes activity within Red and evaluates risk.
 
-Save the pepper somewhere safe (a password manager or secrets store) before you
-run this, and keep the process under a supervisor such as systemd so it comes back
-after a reboot. Put Red behind HTTPS (Caddy, nginx, or your platform's proxy).
-Session cookies become `Secure` and `__Host-` prefixed when the proxy sends
-`X-Forwarded-Proto: https`.
+It can:
 
-### Railway, Render, Fly.io and similar
+* Calculate risk scores
+* Identify behavioural anomalies
+* Detect suspicious sequences
+* Introduce additional authentication
+* Reduce access
+* Deploy decoys
+* Freeze accounts
+* Record security decisions
 
-1. Point the service at this repository. It needs no build step; set the build
-   command to `npm ci --omit=dev` only if you want the optional PostgreSQL driver.
-2. Set the start command to `npm start`.
-3. Add a persistent volume or disk, and set `RED_DB` to a path on it.
-4. Set `RED_PASSWORD_PEPPER`, `RED_ADMIN_EMAIL`, `RED_ADMIN_PASSWORD`, `RED_CEO_EMAIL`
-   and `RED_CEO_PASSWORD` as secrets.
-5. Set `RED_TRUST_PROXY=1`.
-6. Set the health check path to `/healthz`.
-
-Run a single instance. SQLite lives on one machine's disk, so scaling to
-several replicas would give each one its own separate database.
-
-### Upgrading from an earlier Red
-
-Start the new version against your existing database. Migrations move password
-hashes into `user_credentials`, add profiles, the activity log and throttling, and
-rebuild the sessions table, which signs everyone out once. Existing passwords keep
-working and are upgraded to Argon2id as people sign in. In production, set
-`RED_PASSWORD_PEPPER` first.
-
-Moving to roles with clearance (migration 007) turns every existing User into an
-Employee, keeps admins as admins and marks existing files Internal, without signing
-anyone out. The next start creates the CEO account, so in production set
-`RED_CEO_EMAIL` and `RED_CEO_PASSWORD` before upgrading.
+The important architectural principle is that **security is integrated into the platform rather than bolted onto it afterwards**.
 
 ---
 
-## Insider risk
+# The Risk Score
 
-`database/crimguard/05_feature_catalog.sql` defines 100 risk variables, and
-[`crimguard/risk/`](crimguard/risk/README.md) turns them into a 0-100 score. The website
-feeds them: `src/telemetry/` records what people do, aggregates it into a daily snapshot per
-account, and runs the engine over it. Everything lands in the CrimGuard database - PostgreSQL
-when `CRIMGUARD_DATABASE_URL` points at one, otherwise the SQLite copy at
-`database/crimguard.db`. Without either, Red behaves exactly as it did before.
+Every account receives a continuously updated risk score:
 
-### What is collected, and what isn't
-
-Red fills in **64 of the 100** variables. The other 36 need a system a website is not part of -
-badge readers, an EDR agent, MDM enrolment, a mail gateway, a DLP proxy, an IdP with MFA - and
-are written as `NULL`, which `06_feature_snapshots.sql` defines as *not collected*. They are
-never written as `0` or `false`, because "no badge system" and "nobody entered the building"
-are not the same fact. `src/telemetry/coverage.js` records the decision for every variable and
-fails to load if it and the catalog ever disagree.
-
-| Category | Filled | Where it comes from |
-| --- | --- | --- |
-| Access & resources | 10/10 | Which projects, pages and account records were opened, and what was searched for |
-| Timing | 10/10 | When people work, against their own pattern and the org's hours |
-| Data movement | 4/10 | Project exports, printing, clipboard size. No USB, personal cloud or mail |
-| Authentication & identity | 6/10 | Sign-ins, failures, new devices, networks and countries, replayed session cookies |
-| Device & network | 5/10 | Browser fingerprint, address ranges, impossible travel, bytes served |
-| Behavioural biometrics | 9/10 | Typing and pointer rhythm, scrolling, idle time, focus changes, clipboard |
-| HR & organisation | 10/10 | Role changes Red makes itself, plus employment details admins record |
-| Communication | 2/10 | Sensitive terms and secret patterns in project text. Red has no messaging |
-| Privilege & permission | 7/10 | Red's own admin actions, and refusals that show someone reaching past their role |
-| Physical & environmental | 1/10 | Printing a page with confidential material on screen |
-
-### What the browser sends
-
-`public/static/telemetry.js` batches up the signals a server cannot see, once a minute:
-
-- **Sent**: timing statistics over each one-minute window (the gaps between keystrokes, how
-  long keys are held, pointer and scroll speed, idle time, focus changes), counts of events,
-  how many characters were copied, and the *names* of any secret-shaped patterns matched.
-- **Never sent**: which keys were pressed, where the pointer went, what was selected, and the
-  text of anything copied or pasted. Classification happens in the page; only the category
-  name ("api_key") survives it.
-
-Everything the server can see for itself - which resources were opened, what was searched for,
-who signed in, who changed a role - is recorded in the route handlers instead, where a page
-cannot forge it. `/api/telemetry` takes the account from the session, so a batch can only ever
-describe the person who sent it. `/privacy` says all of this to the people being scored.
-
-### Seeing a score
-
-Every signed-in page has a **Risk** button in the bottom-left corner. It opens a movable
-window with the account's own score and all 100 variables, live. People can read their own
-assessment because the alternative - scoring people and hiding it from them - is worse.
-
-Admins get `/admin/risk`: everyone's latest score, open alerts, and one person's full variable
-list with each one's contribution to the score. It is also where the HR context lives
-(employment type, hire and leaving dates, reviews, disciplinary actions, leave), since Red has
-no HR system to sync from. Those are the engine's amplifier: they raise existing risk and
-cannot create it.
-
-Snapshots are rebuilt and rescored every 15 minutes, and on demand from the console.
-
-### Impossible travel
-
-Two sign-ins from places further apart than the time between them allows. `src/telemetry/geo.js`
-resolves each one to coordinates, takes the great-circle distance, and divides by the elapsed
-time: over **900 km/h** across at least **400 km** is not a journey anyone made.
-
-It is judged in kilometres per hour rather than hours of UTC offset, which matters both ways.
-Paris and Lagos share an offset and are 4,700 km apart — an offset comparison never sees it.
-Berlin to New York in ten hours is a real flight at 639 km/h — an offset comparison flags it
-every time.
-
-```
-Berlin → Lagos, 20 min apart       5,196 km   15,589 km/h   impossible
-Paris  → Lagos, 45 min apart       4,709 km    6,279 km/h   impossible  (same UTC offset)
-Berlin → New York, 2 h apart       6,386 km    3,193 km/h   impossible
-Berlin → New York, 10 h apart      6,386 km      639 km/h   a real flight
-Amsterdam → Brussels, 1 min apart    173 km   10,394 km/h   under 400 km, not judged
+```text
+0 ───────────────────────────────────────────── 100
+Low                                             Critical
 ```
 
-The network has to have changed too. A VPN moves the address without moving the person, and
-changing a laptop's region setting moves neither — neither fires this, though a new address
-range is still noticed on its own. Two sign-ins at the *same instant* from different cities
-give an infinite speed, which is the correct answer: one of them is not where it claims to be.
+The score is based on **100 separate risk variables**.
 
-On a clean account this one flag takes the score from **3.0 to 32.3** — the engine weights it
-1.0 as a strong precursor, and the catalog marks it `context_explainable: false`, so no ticket
-can excuse it.
+These variables measure different aspects of behaviour, including:
 
-**Where the location comes from.** Red carries no GeoIP database — that is a licensed binary
-this project deliberately doesn't ship — so a sign-in is placed by the IANA time zone the
-browser reports, which is named after a real city. `geo.js` holds coordinates for the ~140
-zones in real use, and stores them in the `latitude`, `longitude` and `country_code` columns
-the schema already has. To use real IP geolocation instead, hand `setIpLookup` a function
-returning `{ latitude, longitude, country }` and everything above it keeps working:
+* File access
+* Data movement
+* Authentication
+* Timing
+* Devices
+* Networks
+* Behavioural biometrics
+* Privilege changes
+* HR context
+* Communication patterns
 
-```js
-const { setIpLookup } = require('./src/telemetry/geo');
-setIpLookup((ip) => myGeoIpReader.city(ip));   // a GeoIP hit wins; the time zone is the fallback
-```
+The score is recalculated periodically and can also change immediately when important events occur.
 
-The time zone arrives with the collector's first batch rather than at sign-in, so a location is
-attached within a window (15 seconds with the panel open, otherwise a minute). A sign-in where
-the collector never ran has no location and is not compared.
+Most importantly:
 
-### Networks and VPNs
+> **Every point of the final score can be traced back to the signals that produced it.**
 
-The three address checks answer three different questions, and the catalog's own source tables
-say which is which:
-
-| Variable | Source table | Fires on |
-| --- | --- | --- |
-| `unusual_ip_range_flag` | `network_events` | **any** address seen that day outside the usual ones, including one moved to mid-session |
-| `new_geolocation_login_flag` | `auth_events` | a **sign-in** from a network, time zone or country not used before |
-| `impossible_travel_flag` | `auth_events` | two **sign-ins** further apart than the time between them allows |
-
-So switching a VPN on while already signed in raises the score, without pretending anyone
-signed in from there. On an account settled on one network for a month:
-
-```
-30 days on the home network              2.99 low
-VPN switched on mid-session, no sign-in  5.50 low   unusual_ip_range_flag  +3.05
-signs out and back in over the VPN       8.41 low   + new_geolocation_login_flag
-```
-
-A mid-session address change is common and usually innocent — phones hand off wifi to cellular,
-leases renew, people tether. No threshold is needed for that, because the engine baselines every
-flag on how often it fires over 90 days: an account whose address changes daily builds a rate
-near 1 and earns nothing from it, while one that has sat still for months and suddenly moves is
-strong evidence. The noisy case calibrates itself away.
-
-A VPN never fires `impossible_travel_flag`, because it moves the address without moving the
-browser's time zone, and distance is what that check is made of.
-
-### Risk limiting
-
-A high score narrows what an account can reach, without anyone having to act. The baseline is
-the average confidentiality of every file in Red, rounded down:
-
-| Score | Clearance is capped at | With a level-3 average |
-| --- | --- | --- |
-| 75 and over | one level below the average | held to 2 |
-| 85 and over | two levels below | held to 1 |
-
-Only **clearance** is cut, which is what the two blanket rules in `db/files.js` run on: an
-admin's reach over everything at or below their level, and a file shared with a whole role.
-Owning a file, and having one shared with you **by name**, are not clearance decisions and are
-left alone — the point is to narrow how wide someone's reach is, not to lock them out of their
-own work mid-sentence.
-
-The cap is applied inside the `person()` CTE in `db/files.js`, so every list, download and
-dialog inherits it from the one place the visibility rule is written. The thresholds live in
-`src/security/limits.js` and nowhere else.
-
-An admin sees it on that person's CrimGuard record and can switch it off for them, with a
-reason. Two exceptions, so the control can't be quietly voided: **an admin cannot waive their
-own limit, nor another admin's.** Both are the CEO's call, the same way admins can't change
-their own role.
-
-Scores are computed in the CrimGuard database but access is decided in SQL against `red.db`, so
-each score is copied into `user_risk_state` as it is produced.
-
-### Leaving
-
-Risk limiting only cuts **clearance**, and a file shared with one person **by name** was never a
-clearance decision: it opens at any confidentiality, and limiting leaves it alone on purpose, so
-narrowing someone's reach doesn't lock them out of the file a colleague handed them to work on.
-
-That is the right default until someone is leaving — which is when insider IP theft clusters, and
-is the one door risk limiting doesn't close. So inside the last **14 days** before a leaving date,
-and only there, that door needs an admin:
-
-| The person | The file | What happens |
-| ---------- | -------- | ------------ |
-| Leaving in 14 days or fewer | Shared with them **by name**, **above** their clearance | Refused, with a request to make |
-| Leaving | Within their clearance, shared with their role, or their own | Opens as it always did |
-| Not leaving | Anything | Opens as it always did |
-
-- **The file is still listed.** Refusing is not hiding: they have to be able to see it to ask for
-  it. The refusal carries the ask, so **Shared with me** offers it instead of dead-ending.
-- **The request lands in Access requests** in the admin console, with the file, its level, who is
-  asking, their reason and how many days they have left.
-- **Releasing a file takes the clearance the file needs**, exactly as changing who can see it does:
-  an admin cannot approve their way into a Secret file, and only the CEO can.
-- **An approval is a key to one file, and expires after 7 days**, so nobody has to remember to take
-  it back. A denial leaves the file shut.
-- **Reaching for a held file is recorded** — in the activity log and as a `least_privilege_violation`
-  the risk engine sees. It is the only trace Red would otherwise keep of someone trying on the way out.
-
-The leaving date comes from the HR context in the risk console (a leaving date on the person, or a
-dated `resignation_notice` / `termination_scheduled` event — the same facts the HR amplifier ramps
-on). Access is decided in SQL against `red.db`, so it is copied into `user_departure_state` as it
-changes, the same arrangement as the score. The window, the approval's life and the rule itself are
-in `src/security/departure.js` and nowhere else.
-
-### Downloading above your clearance
-
-A file shared with someone by name, or released to them by an admin, can sit above their clearance.
-Two rules apply when they take a copy of one. Their own files are never covered, and clearance means
-the one they have after risk limiting, the same as the leaving gate.
-
-- **Every download asks for a code.** The download is refused with `download_mfa_required` and the
-  page asks for the verification code (the demo build's `123456`, as at the step-up), then downloads.
-  One code is good for one download of that file, on that session, within 2 minutes. Five wrong codes
-  shut that file on that session (`download_mfa_locked`). Passes, failures and lockouts go in the
-  activity log.
-- **Grabbing it at once raises the score.** A download attempted within **5 seconds** of being given
-  the file (the by-name share, or the admin's release, whichever is later) adds **+20** to the score
-  for **7 days**, as a live adjustment beside the engine's score. It is judged on the first attempt,
-  before the code is asked for, so typing the code can't hide it. A retry is the same grab, not a
-  second one. It is logged as `risk.rapid_download` and reported to the risk engine as a
-  `least_privilege_violation`.
-- **The CrimGuard dashboard shows the score with adjustments applied**, the number limiting, uploads
-  and the step-up act on, with each adjustment and its reason listed on the person's record.
-
-The window, the points and the code's life are in `src/security/above-clearance.js`.
-
-### Starting access
-
-Two ways access arrives without anyone granting it file by file.
-
-**A project shared with a role.** Everyone in that role sees its files, including ones uploaded
-later, as far as their clearance reaches — sharing a project with the interns does not hand
-them a Secret file inside it. Set from the project drawer; the owner decides.
-
-**A new account provisioned from its peers.** A new intern should not begin with nothing. Red
-looks at the people who already hold that role, counts the files each was given by name, and
-hands the newcomer that many — taking the ones the most role-mates already have, most-shared
-first. Bounded twice over: never above the role's clearance, and never at all when there are no
-peers to copy. Role and project grants aren't copied, because those already apply to the whole
-role the moment it is set.
-
-### Decoys
-
-Once an account's score reaches **40**, a fake project appears in its list, named like the
-thing someone hoarding data would reach for. Only that account can see it, and nothing
-legitimate ever needs to touch it. *Reading* it proves nothing. *Changing or deleting* it is
-the trip, and it:
-
-1. records a `honeytoken_triggers` row, which floors the next score at 100 (critical),
-2. revokes every session the account has, signing the person out everywhere, and logs the
-   revocation in `identity_actions`,
-3. prints the account, its score at that moment, the decoy and the action to the server console.
-
-Set `RED_HONEYTOKEN_SCORE` to change the threshold. A decoy id with no live decoy behind it is
-just a missing project: guessing the number does nothing.
-
-### Seeding a history
-
-```bash
-npm run db:seed-risk                      # the first admin, 210 days
-npm run db:seed-risk -- --email a@b.c     # a particular account
-npm run db:seed-risk -- --profile spike   # one loud day instead of a slow creep
-npm run db:seed-risk -- --reset           # clear that account's history first
-```
-
-The default is the deck's Case B: four quiet months, then a creep from ~15 to ~70 files a day
-with nothing on file to explain it. No single day looks wrong, and a 3-sigma rule never fires;
-the drift detector reports it as `slow_exfiltration` about seven weeks in.
-
-For a whole company rather than one account:
-
-```bash
-npm run db:seed-demo                      # 26 people, 210 days (about seven minutes)
-npm run db:seed-demo -- --people 12 --days 60   # a quicker run
-npm run db:seed-demo -- --reset           # remove the seeded @red.local accounts first
-```
-
-Six behavioural shapes - quiet, busy with a ticket to explain it, slow creep, one loud day,
-leaving, shadow-AI user - and the real engine left to score them. It writes to `data/`, never to
-the tracked seed, and refuses to run with `NODE_ENV=production`: two of the cast are admins and
-every account shares the password it prints.
+CrimGuard is therefore designed to be explainable rather than a black-box risk classifier.
 
 ---
 
-## Layout
+# Personal Baselines
 
-```
-src/
-  server.js              startup: config checks, migrations, first admin and CEO, graceful shutdown
-  app.js                 HTTP server: routing, same-origin checks, errors into responses
-  services.js            builds what a request can reach - stores, sessions, telemetry, protection -
-                         and the hooks between them
-  jobs.js                what runs on a timer: housekeeping, and scoring every quarter hour
-  config.js              environment variables, session lifetimes, rate limits
-  validation.js          input cleaning and validation shared by the routes
-  routes/                index.js (every route, registered in one place), auth.js, profile.js,
-                         projects.js, files.js (files, sharing, access), admin.js (people, roles,
-                         activity), crimguard.js (the dashboard's data), telemetry.js (collector,
-                         risk console, HR context), step-up.js (the OTP step-up), egress.js
-                         (shadow AI), events.js (the live console), decoys.js (decoy projects),
-                         pages.js (HTML, static, health), crawl.js (robots, sitemap, llms.txt)
-  security/              access.js (roles, clearance, who may change access),
-                         session-gate.js (freeze and both step-ups, and what stays open during them),
-                         departure.js, above-clearance.js, risk-signals.js, genai.js, ai-analyst.js,
-                         email-reputation.js, proof-of-work.js, limits.js, provisioning.js,
-                         passwords.js (pepper + Argon2id), password-policy.js, sessions.js,
-                         throttle.js, tokens.js, headers.js
-  protection/            wires the three below into the app at one seam
-  identity/              the identity throttle: response policies, step-up and freeze
-  biometrics/            typing and pointer dynamics against each owner's profile
-  honeytrap/             decoy files, canaries and trap endpoints
-  http/                  router, request parsing, responses, cookies, errors, origin.js (Host and
-                         Origin, believed only as far as they must be)
-  db/                    index.js (open, pragmas), migrate.js, errors.js, and one query module per area:
-                         users.js, sessions.js, projects.js, files.js (and who can see
-                         a file), roles.js, people.js (the dashboard), risk.js, signals.js
-                         (risk adjustments, email reputation, the OTP demand),
-                         departures.js (leaving dates and access requests), download-mfa.js
-                         (codes for downloads above clearance), audit.js
-                         crimguard.js connects the risk database, PostgreSQL or the SQLite
-                         fallback; sqlite-schema.js builds that fallback from the same SQL
-  telemetry/             the risk pipeline: index.js (the facade routes call, and the serial
-                         queue that keeps it off the request path), coverage.js (how each of the
-                         100 variables is collected), subjects.js, events.js, ingest.js,
-                         features.js, snapshots.js, scoring.js, honeytokens.js, patterns.js, geo.js
-database/
-  web/migrations/        SQLite schema for the website, applied on start
-  crimguard/             PostgreSQL schema for the CrimGuard detection platform, and
-                         sqlite/ for the few views SQLite cannot express the same way
-crimguard/risk/          the scoring formula (see its own README)
-public/                  pages, 404.html, and static/: app.js, crimguard.js (the dashboard),
-                         event-console.js (its live console), telemetry.js (the collector),
-                         risk-panel.js, risk-console.js, identity-console.js, step-up.js,
-                         biometrics.js, shared-files.js, styles.css, icons
-test/                    node --test suites, one per area, plus crimguard/ for the risk engine
-scripts/demo/            build.js and demo-api.js, which make the static demo
-scripts/db/              status.js, build-sqlite.js, seed-risk.js, seed-demo.js
-demo/                    the generated static demo (npm run build:demo)
-data/                    local database and development pepper (git-ignored)
-docs/                    the explainer PDF, its figures, and the scripts that build them
+A central design principle of CrimGuard is:
+
+> **Compare users primarily against themselves, not against everyone else.**
+
+Suppose one employee normally downloads 2 GB per day while another normally downloads 10 MB.
+
+A universal rule such as:
+
+```text
+Alert if download > 1 GB
 ```
 
-### API
+would constantly generate false positives for the first employee.
 
-| Method & path                          | Who |
-| -------------------------------------- | --- |
-| `POST /api/signup`                     | anyone, creates an Intern |
-| `POST /api/login` `{portal}`           | anyone |
-| `GET /api/auth/challenge`              | anyone; the proof-of-work a sign-in has to solve when one is being asked for |
-| `POST /api/logout`, `GET /api/me`      | signed in |
-| `PATCH /api/me/password` `{currentPassword, newPassword}` | signed in; new session here, signs out other devices |
-| `GET/PATCH /api/me/profile` `{name, jobTitle, organization, bio}` | signed in, own profile |
-| `GET/POST /api/me/step-up` `{code}`    | signed in; whether this session owes a code, and answers it |
-| `GET /api/identity/status`             | signed in; whether this session owes a password confirmation, or is frozen |
-| `POST /api/identity/step-up` `{password}` | signed in; confirms the owner is the one on the session |
-| `GET/POST /api/projects`               | signed in, own projects only |
-| `PATCH/DELETE /api/projects/:id`       | signed in, own projects only |
-| `GET /api/projects/export`             | signed in; everything the account owns as one JSON download, and the only way data leaves Red in bulk |
-| `GET/PUT /api/projects/:id/access` `{roles}` | own projects; which role groups the project is shared with. A grant never reaches past that role's clearance |
-| `GET /api/projects/:id/files`          | signed in, own projects only |
-| `POST /api/projects/:id/files`         | own projects; raw bytes with `X-File-Name` (URL-encoded) |
-| `GET /api/projects/:id/files/:fileId/download` | own projects; always sent as a download |
-| `PATCH /api/projects/:id/files/:fileId` `{name}` | own projects; rename |
-| `PUT /api/projects/:id/files/:fileId/content` | own projects; raw bytes, replaces the contents |
-| `DELETE /api/projects/:id/files/:fileId` | own projects |
-| `GET /api/files/shared`                | signed in, files other people shared with you or your role |
-| `GET /api/files/shared/:id`            | signed in; opens one. A decoy answers here too, and opening one trips it |
-| `POST /api/files/shared/integrity` `{action, fingerprints}` | signed in; clipboard matches the page noticed, never the text itself |
-| `POST /api/files/:fileId/access-request` `{reason}` | signed in, only for a file the departure gate is holding |
-| `GET /api/me/access-requests`          | signed in, your own requests and what came back |
-| `GET /api/files/:fileId/download`      | anyone who may see the file; otherwise 404. Above your clearance, 403 `download_mfa_required` until a code is in |
-| `POST /api/files/:fileId/download/verify` `{code}` | signed in, a file above your clearance; the code is good for one download on this session |
-| `GET /api/files/:fileId/access`        | the owner, admins and the CEO |
-| `PUT /api/files/:fileId/access` `{confidentiality, roles, people}` | admin or CEO, files up to their clearance; replaces the whole list |
-| `GET /api/roles`                       | signed in; admins and the CEO also get member counts |
-| `POST /api/admin/roles` `{label, clearance}` | CEO |
-| `PATCH/DELETE /api/admin/roles/:id`    | CEO, roles the CEO added; delete only when nobody holds it |
-| `GET /api/admin/users`                 | admin or CEO |
-| `POST /api/admin/users` `{role}`       | admin or CEO, roles up to their clearance; the person must then choose a password |
-| `PATCH /api/admin/users/:id/role`      | admin or CEO, not their own account or anyone with more clearance |
-| `PATCH /api/admin/users/:id/password`  | the same; signs that account out everywhere |
-| `DELETE /api/admin/users/:id`          | the same |
-| `GET /api/admin/audit?limit&before`    | admin or CEO, newest first |
-| `GET /api/admin/events?after`          | admin or CEO, the same log oldest first from a cursor, for the live console |
-| `GET /api/admin/access-requests?status` | admin or CEO, the queue plus who is leaving |
-| `POST /api/admin/access-requests/:id/decision` `{decision, note}` | admin or CEO, files up to their clearance; approve or deny |
-| `GET /api/crimguard/overview`          | admin or CEO, everyone with their counts, presence and score |
-| `GET /api/crimguard/people/:id`        | admin or CEO, one person's record; file names above your clearance left out |
-| `GET /api/crimguard/people/:id/variables` | admin; that person's 100 variables as they stand, for the test dialog to start from |
-| `PUT /api/crimguard/people/:id/override` | admin; force variable values or a score for a date, so limiting and the traps can be demonstrated |
-| `PATCH /api/crimguard/people/:id/limit` `{enabled}` | admin; turns risk limiting off for one account. Never your own, and only the CEO may do it to an admin |
-| `POST /api/telemetry`                  | signed in, own behaviour only |
-| `GET /api/me/risk`                     | signed in, own score and all 100 variables |
-| `GET /api/me/egress`                   | signed in; what was reported about your own egress, and what it counted for |
-| `POST /api/telemetry/egress`           | a signed-in session about itself, or an agent holding `X-Red-Agent-Key` about anyone. Never content, only how much and where to |
-| `POST /api/biometrics/windows`         | signed in; one window of typing and pointer use. The session says whose it is, never the body |
-| `GET /api/admin/risk/overview`         | admin, everyone's latest score and open alerts |
-| `GET /api/admin/risk/people/:id`       | admin, one person's 100 variables |
-| `GET /api/admin/risk/catalog`          | admin, the catalog and how Red collects each entry |
-| `GET /api/admin/risk/people/:id/explain` | admin; the same numbers in a sentence, when `GROQ_API_KEY` is set. The page is unchanged without it |
-| `GET /api/admin/risk/people/:id/hr`    | admin, the HR timeline behind the edit dialog |
-| `POST /api/admin/risk/run` `{date}`    | admin, recompute and rescore a day |
-| `PATCH /api/admin/risk/people/:id`     | admin, employment type, hire and leaving dates |
-| `POST /api/admin/risk/people/:id/hr-events` | admin, records a review, action or notice |
-| `POST/DELETE /api/admin/risk/people/:id/leave` | admin, leave periods |
-| `GET /api/admin/egress`                | admin or CEO, the shadow-AI feed |
-| `GET /api/admin/egress/triage`         | admin, that feed triaged in writing, when `GROQ_API_KEY` is set |
-| `GET /api/admin/identity`              | admin, accounts under a response and the policies behind them |
-| `PATCH /api/admin/identity/policies/:id` `{isEnabled, minFinalScore, requiresApproval}` | admin |
-| `POST /api/admin/identity/actions/:id/approve` | admin, carries out an action that was waiting on a person |
-| `POST /api/admin/identity/actions/:id/decline` | admin, drops it instead |
-| `POST /api/admin/identity/people/:id/restore` `{note}` | admin, lifts a freeze |
-| `GET /api/admin/honeytrap/people/:id`  | admin, a person's decoy plantings and any trips |
-| `POST /api/admin/honeytrap/run`        | admin, applies the decoy policy to everyone now instead of waiting for the next pass |
-| `GET /api/admin/biometrics/people/:id` | admin, a person's typing profile and recent verdicts |
-| `GET /healthz`                         | anyone |
-| `GET /robots.txt`, `/sitemap.xml`, `/llms.txt` | anyone; public pages only |
-| `GET /api/internal/v1/credentials`, `/exports`, `/billing/customers`, `/deploy` | nobody. Traps: they answer like a real API that does not recognise the key, and any canary presented as one trips it |
+Instead, CrimGuard establishes an individual's normal behaviour and measures deviations from it.
 
-Errors are `{ "error": "message" }`, plus a `code` for `password_change_required` (403),
-`not_privileged` (403, the account no longer has the admin console), `rate_limited`
-(429, with `Retry-After`), and `step_up_required` / `mfa_required` (403, the session must confirm
-who is on it - by password or by code - before anything but the step-up itself; both can be owed
-at once, and each stays answerable while the other is).
+For numerical signals, CrimGuard uses robust statistics such as:
+
+* Median
+* Median absolute deviation (MAD)
+
+This prevents existing outliers from distorting the baseline.
+
+---
+
+## New Users
+
+A new account has insufficient personal history.
+
+Instead of treating the user as having no baseline, CrimGuard temporarily uses information from people in the same role.
+
+The system gradually transitions from:
+
+```text
+Role-based baseline
+        ↓
+Mixed baseline
+        ↓
+Personal baseline
+```
+
+The transition occurs over approximately ten days.
+
+---
+
+# Detecting Slow Insider Theft
+
+A major problem with conventional anomaly detection is **baseline poisoning**.
+
+If an employee slowly increases their activity, a rolling baseline can gradually absorb the malicious behaviour.
+
+For example:
+
+```text
+Month 1: 15 files/day
+Month 2: 30 files/day
+Month 3: 50 files/day
+```
+
+A rolling average eventually starts treating 50 files as normal.
+
+CrimGuard therefore maintains an additional **anchored baseline**.
+
+This is a frozen historical snapshot from approximately three to six months earlier.
+
+The system can therefore detect both:
+
+### Sudden anomalies
+
+```text
+15 → 608
+```
+
+### Slow behavioural drift
+
+```text
+15 → 18 → 22 → 30 → 40 → 50 → 70
+```
+
+---
+
+# Context-Aware Detection
+
+Unusual behaviour does not automatically mean malicious behaviour.
+
+CrimGuard therefore asks:
+
+> **Is there a legitimate explanation for what happened?**
+
+The system checks four major dimensions.
+
+| Factor              | Question                                      |
+| ------------------- | --------------------------------------------- |
+| **Reliability**     | Was the explanation actually approved?        |
+| **Timing**          | Was it valid when the activity occurred?      |
+| **Scope**           | Were the accessed resources actually covered? |
+| **Proportionality** | Was the amount of activity reasonable?        |
+
+For example:
+
+```text
+Approved migration
+Expected: 600 files
+Actual:   650 files
+```
+
+This is likely reasonable.
+
+But:
+
+```text
+Approved migration
+Expected: 600 files
+Actual:   3,000 files
+```
+
+The explanation becomes much weaker.
+
+### Explanations are capped
+
+A legitimate ticket can reduce risk but can never completely eliminate it.
+
+The maximum explanation factor is **90%**.
+
+This prevents attackers from using fabricated or manipulated tickets as a perfect shield.
+
+---
+
+# Risk Calculation
+
+The scoring process can be summarized as:
+
+```text
+Observed Behaviour
+        ↓
+Is it unusual for this user?
+        ↓
+How important is the signal?
+        ↓
+How valuable is the data?
+        ↓
+Is there a legitimate explanation?
+        ↓
+Are multiple signals reinforcing each other?
+        ↓
+Is there a suspicious sequence?
+        ↓
+Final Risk Score
+```
+
+Signals are weighted according to their importance.
+
+### Highest-weight signals
+
+Examples include:
+
+* Data movement
+* Personal cloud transfers
+* USB activity
+* Audit-log tampering
+* Impossible travel
+* Session-token reuse
+* Unauthorized access grants
+
+### Medium-weight signals
+
+Examples include:
+
+* Timing
+* Communication
+* Behavioural biometrics
+* Physical/environmental signals
+
+### Lower-weight signals
+
+Examples include deliberately noisy indicators such as:
+
+* Application switching
+* Message volume
+
+---
+
+# Correlated Signals
+
+CrimGuard avoids counting closely related signals as if they were completely independent.
+
+For example, one bulk-copy operation might simultaneously increase:
+
+* File count
+* Bytes transferred
+* Confidential-file count
+
+These signals overlap.
+
+Therefore, the strongest signal contributes fully while subsequent correlated signals contribute progressively less.
+
+This reduces artificial score inflation.
+
+---
+
+# Suspicious Sequences
+
+CrimGuard also looks for sequences rather than isolated events.
+
+A common exfiltration pattern is:
+
+```text
+Collect
+  ↓
+Stage
+  ↓
+Send
+```
+
+When several stages occur together, CrimGuard applies an additional risk penalty.
+
+This allows the system to recognize behavioural patterns rather than simply counting events.
+
+---
+
+# Risk Escalation
+
+CrimGuard uses a graduated response system.
+
+It does not immediately lock users out because of a suspicious event.
+
+|    Risk | Response                                                          |
+| ------: | ----------------------------------------------------------------- |
+|  **40** | Decoy appears                                                     |
+|  **50** | Additional password confirmation if account takeover is suspected |
+|  **60** | Additional decoy                                                  |
+|  **70** | Password confirmation required                                    |
+|  **75** | Clearance reduced by one level                                    |
+|  **80** | Additional decoy                                                  |
+|  **85** | Clearance reduced again + verification                            |
+|  **90** | Account frozen                                                    |
+| **100** | Reserved for confirmed compromise / trap activation               |
+
+The principle is:
+
+> **The higher the confidence and severity, the stronger the response.**
+
+---
+
+# Decoys and Honeytraps
+
+This is one of CrimGuard's strongest detection mechanisms.
+
+At elevated risk levels, the system can create a **decoy project or file** that only the suspicious account can see.
+
+Examples include:
+
+```text
+Production API Keys — DO NOT SHARE
+Payroll and Compensation — All Staff
+Customer Master List
+```
+
+These files are fake.
+
+They contain no legitimate information.
+
+---
+
+## Why Decoys Work
+
+Normal behavioural signals provide evidence of possible malicious activity.
+
+A decoy provides substantially stronger evidence.
+
+If a user interacts with a file that:
+
+* Does not actually exist
+* Was never part of their legitimate work
+* Was specifically planted for detection
+
+then the interaction is highly informative.
+
+### Example
+
+| Behaviour                | Result                                |
+| ------------------------ | ------------------------------------- |
+| Opens decoy              | No automatic punishment               |
+| Reads decoy              | No automatic punishment               |
+| Attempts to modify decoy | Account frozen                        |
+| Attempts to delete decoy | Account frozen                        |
+| Copies fake credential   | Account frozen                        |
+| Uses fake credential     | Account and associated account frozen |
+
+The system distinguishes **curiosity** from an action indicating intent.
+
+---
+
+# Canary Credentials
+
+Some decoy files contain fake credentials that look like legitimate:
+
+* API keys
+* Passwords
+* Authentication tokens
+
+These credentials are monitored.
+
+If they appear elsewhere, CrimGuard can determine that the information was moved.
+
+The credentials can remain active as detection mechanisms even after the original decoy is removed.
+
+This creates a form of persistent tripwire.
+
+---
+
+# Behavioural Biometrics
+
+CrimGuard also attempts to determine whether the person using an authenticated account is actually the account owner.
+
+It does this without recording the contents of what the user types.
+
+Instead, it observes behavioural characteristics such as:
+
+* Average time between keystrokes
+* Key-hold duration
+* Pointer movement speed
+* Scrolling behaviour
+* Idle patterns
+* Focus changes
+
+The system asks:
+
+> **Does this session behave like the account owner's previous sessions?**
+
+---
+
+## Behavioural Biometrics + Risk
+
+The biometric signal is not interpreted alone.
+
+| Typing change    | Risk score | Interpretation                               |
+| ---------------- | ---------: | -------------------------------------------- |
+| Yes              |     Normal | Possible account takeover                    |
+| Somewhat changed |   Elevated | Multiple signals agree                       |
+| No               |   Elevated | Likely legitimate user behaving suspiciously |
+
+This distinction is important.
+
+A changed typing pattern with a normal risk score may indicate that someone else is using the account.
+
+An unchanged typing pattern with a high risk score suggests that the legitimate user may be performing suspicious activity themselves.
+
+---
+
+# Impossible Travel Detection
+
+CrimGuard compares sign-in locations and timestamps.
+
+It calculates:
+
+```text
+Implied speed = Distance / Time
+```
+
+For example:
+
+| Sign-ins          |   Time | Implied Speed | Result     |
+| ----------------- | -----: | ------------: | ---------- |
+| Berlin → Lagos    | 20 min |   15,589 km/h | Impossible |
+| Paris → Lagos     | 45 min |    6,279 km/h | Impossible |
+| Berlin → New York |   2 hr |    3,193 km/h | Impossible |
+| Berlin → New York |  10 hr |      639 km/h | Plausible  |
+
+The system uses actual geographic distance rather than simply comparing time zones.
+
+Network changes are also considered to reduce false positives from:
+
+* VPNs
+* Browser location settings
+* Time-zone manipulation
+
+---
+
+# Identity Throttle
+
+CrimGuard has a centralized response layer called the **Identity Throttle**.
+
+It coordinates multiple security signals and determines what action should occur.
+
+### Step-up
+
+The user must confirm their identity before continuing.
+
+Triggered by:
+
+* Risk score ≥ 70
+* Possible account takeover
+* Significant biometric change
+
+### Freeze
+
+All active sessions terminate and login is blocked until an administrator restores access.
+
+Triggered by:
+
+* Risk score ≥ 90
+* Decoy/honeytrap activation
+
+### Revoke
+
+Existing sessions are terminated, but the user can authenticate again.
+
+The response system records every action so that the security state survives application restarts.
+
+---
+
+# Access Control
+
+CrimGuard uses a unified clearance model.
+
+## Roles
+
+| Role     | Clearance |
+| -------- | --------: |
+| Intern   |         1 |
+| Employee |         2 |
+| Admin    |         4 |
+| CEO      |         5 |
+
+## Files
+
+| File Level | Classification |
+| ---------: | -------------- |
+|          1 | Open           |
+|          2 | Internal       |
+|          3 | Confidential   |
+|          4 | Restricted     |
+|          5 | Secret         |
+
+A user's clearance must normally meet or exceed the file's confidentiality level.
+
+---
+
+# Risk-Based Clearance Reduction
+
+As risk increases, CrimGuard can automatically reduce the user's effective clearance.
+
+The baseline is calculated from the average confidentiality level of files within the system.
+
+Example:
+
+```text
+Risk ≥ 75 → clearance may fall by one level
+Risk ≥ 85 → clearance may fall by two levels
+```
+
+The goal is not necessarily to lock the employee out of their current work.
+
+Instead, it is to reduce the amount of sensitive information they can reach while an investigation is occurring.
+
+---
+
+# Governance
+
+Administrators can override restrictions for ordinary users when legitimate work requires it.
+
+However:
+
+> **An administrator cannot disable their own automatic restrictions.**
+
+An administrator also cannot override restrictions for another administrator.
+
+Only the CEO can override administrative restrictions.
+
+Every override requires a reason and is logged.
+
+This prevents the security mechanism from becoming optional for the people with the greatest privileges.
+
+---
+
+# Departure Protection
+
+Insider theft can become particularly concerning when an employee is approaching departure.
+
+CrimGuard therefore activates a special **departure gate** during the final 14 days before a recorded leaving date.
+
+If a departing employee attempts to access a file that:
+
+* Was explicitly handed to them by name
+* Is above their normal clearance
+
+the request is blocked and sent to an administrator.
+
+The administrator can approve access temporarily.
+
+Approvals:
+
+* Apply to a specific file
+* Expire after seven days
+* Cannot bypass Secret-level restrictions
+* Are recorded
+
+The system also records attempts to access protected files as risk signals.
+
+---
+
+# Download Protection
+
+When a user receives access to a file above their normal clearance, downloading it requires additional verification.
+
+Each download requires a verification code.
+
+A code is:
+
+* Valid for one download
+* Valid for one session
+* Valid for two minutes
+
+Five incorrect codes lock that file for the current session.
+
+All attempts are logged.
+
+---
+
+## Rapid Download Detection
+
+If a user attempts to download a newly granted file within **five seconds** of receiving access, CrimGuard increases their risk score.
+
+The reasoning is that immediately grabbing a newly granted file can be a stronger indicator of collection behaviour than gradually working with the file.
+
+The score increase is:
+
+```text
++20 risk points
+```
+
+and remains relevant for seven days.
+
+---
+
+# Shadow AI Detection
+
+CrimGuard includes a limited mechanism for identifying potential transfer of sensitive information into unauthorized AI systems.
+
+The system can determine:
+
+* Which internal file was copied from
+* How much information was copied
+* How confidential the source was
+* Whether the copied data looked secret-shaped
+
+However, CrimGuard does **not** pretend that a website can see everything happening on a computer.
+
+A website cannot reliably observe:
+
+* Another browser tab
+* Another desktop application
+* Arbitrary browser extensions
+* Data entered into external applications
+
+The system therefore only makes claims based on information it can actually observe.
+
+---
+
+# Sign-In Protection
+
+Before a password is checked, the browser performs a small amount of computational work.
+
+This is designed to increase the cost of large-scale credential attacks.
+
+It is intentionally **not a CAPTCHA**.
+
+The goal is to make thousands of automated login attempts expensive while adding only a small delay to legitimate users.
+
+---
+
+# Email Reputation
+
+CrimGuard can also consider:
+
+* Known breach exposure
+* Disposable email domains
+
+These are intentionally weak signals.
+
+They can increase existing risk but **cannot create a high-risk state by themselves**.
+
+This follows a broader design principle:
+
+> **Weak contextual information should amplify evidence, not manufacture it.**
+
+---
+
+# Architecture
+
+CrimGuard deliberately separates the normal application database from the security database.
+
+## Application Database
+
+Contains:
+
+* Accounts
+* Passwords
+* Roles
+* Projects
+* Files
+* Permissions
+* Activity logs
+
+## Risk Database
+
+Contains:
+
+* 100 risk variables
+* Raw behavioural events
+* Risk scores
+* Alerts
+* HR context
+* Risk history
+
+The application can continue operating independently of the security database.
+
+If the risk database is detached, the file-sharing application continues functioning normally.
+
+---
+
+# End-to-End Data Flow
+
+```text
+                  ┌──────────────────┐
+                  │      User        │
+                  └────────┬─────────┘
+                           │
+                           ▼
+                  ┌──────────────────┐
+                  │       Red        │
+                  │ File Sharing App │
+                  └───────┬──────────┘
+                          │
+              ┌───────────┴───────────┐
+              │                       │
+              ▼                       ▼
+       Browser Signals         Server Signals
+              │                       │
+              └───────────┬───────────┘
+                          ▼
+                 ┌──────────────────┐
+                 │  Risk Database   │
+                 └────────┬─────────┘
+                          ▼
+                 ┌──────────────────┐
+                 │  Risk Engine     │
+                 │ 100 Variables    │
+                 └────────┬─────────┘
+                          ▼
+                 ┌──────────────────┐
+                 │ Risk Score 0–100 │
+                 └────────┬─────────┘
+                          ▼
+                 ┌──────────────────┐
+                 │ Policy / Throttle│
+                 └────────┬─────────┘
+                          ▼
+                 ┌──────────────────┐
+                 │ Access Decision  │
+                 └──────────────────┘
+```
+
+---
+
+# Browser vs Server Data
+
+The browser is intentionally trusted with as little security authority as possible.
+
+## Browser can report
+
+* Typing rhythm
+* Pointer speed
+* Scrolling
+* Idle time
+* Focus changes
+* Clipboard size
+* Printing
+* Browser characteristics
+
+## Server records directly
+
+* File access
+* Search activity
+* Authentication events
+* Role changes
+* Permission changes
+* Downloads
+* Data transferred
+* Account activity
+
+The server-side portion is considered more trustworthy because the browser cannot simply fabricate what the server itself observes.
+
+---
+
+# The 100 Risk Variables
+
+The system contains 100 defined risk variables across ten categories.
+
+| Category                    | Variables |
+| --------------------------- | --------: |
+| Access and resources        |        10 |
+| Timing                      |        10 |
+| Data movement               |        10 |
+| Authentication and identity |        10 |
+| Device and network          |        10 |
+| Behavioural biometrics      |        10 |
+| HR and organization         |        10 |
+| Communication               |        10 |
+| Privilege and permission    |        10 |
+| Physical and environmental  |        10 |
+| **Total**                   |   **100** |
+
+The current website implementation provides **64 usable variables**.
+
+The remaining **36 are deliberately marked as unavailable rather than zero** because they require systems outside the website, such as:
+
+* Badge readers
+* Endpoint agents
+* Device management
+* Mail gateways
+* Data-loss prevention systems
+
+This distinction is important.
+
+```text
+Unavailable ≠ Zero
+```
+
+If CrimGuard cannot observe a signal, it should not pretend that the signal is zero.
+
+---
+
+# Privacy
+
+Privacy is a core design constraint rather than an afterthought.
+
+CrimGuard records behavioural metadata, not the actual content of user activity.
+
+## What CrimGuard records
+
+* Typing rhythm
+* Average pointer speed
+* Clipboard size
+* Number of copied characters
+* Whether copied material resembles a password/key
+* Files opened
+* Pages accessed
+* Sign-ins
+* Browser information
+* Approximate network information
+
+## What CrimGuard does NOT record
+
+* Actual keystrokes
+* The keys a person typed
+* Pointer coordinates
+* Pointer paths
+* Mouse clicks
+* Clipboard contents
+* File contents
+* Precise physical location
+
+For example:
+
+> **CrimGuard records the rhythm of the typing, not the typing.**
+
+The same principle applies to clipboard monitoring.
+
+The system can determine that something resembling a secret was copied, but the copied text itself is discarded.
+
+---
+
+# User Transparency
+
+Every user can view their own:
+
+* Risk score
+* 100 risk variables
+* Risk contributions
+* Relevant behavioural information
+
+CrimGuard also provides a dedicated privacy explanation describing what is and is not collected.
+
+The goal is to avoid a system where an organization secretly scores people without allowing them to understand the basis of that score.
+
+---
+
+# Admin Dashboard
+
+Administrators can view:
+
+### CrimGuard Dashboard
+
+* Users
+* Roles
+* Projects
+* Files
+* Storage
+* Online status
+* Risk score
+
+### Risk Console
+
+* Current risk scores
+* Alerts
+* All 100 variables
+* Individual score contributions
+* HR context
+
+### Activity Log
+
+* Sign-ins
+* Password changes
+* Role changes
+* File permission changes
+* Downloads
+* Access to administrative records
+
+### Access Requests
+
+A queue containing:
+
+* User
+* Requested file
+* File classification
+* Reason
+* Remaining days before departure
+
+---
+
+# Self-Monitoring Administrators
+
+CrimGuard also monitors the people who operate the system.
+
+Looking at another person's sensitive record is itself logged.
+
+Files above the viewer's clearance are counted but their names are not unnecessarily exposed.
+
+This follows a simple principle:
+
+> **A system that watches everyone must also watch its watchers.**
+
+---
+
+# Validation
+
+The system has been tested against controlled scenarios with known expected outcomes.
+
+## Scenario A — Legitimate Migration
+
+```text
+Normal behaviour:       15 files/day
+Observed behaviour:     608 files/day
+Explanation:            Approved migration
+Resulting score:        17.8
+```
+
+The system recognizes that the behaviour is unusual but largely explained.
+
+---
+
+## Scenario A Without Explanation
+
+```text
+Normal behaviour:       15 files/day
+Observed behaviour:     608 files/day
+Explanation:            None
+Resulting score:        96.3
+```
+
+The behaviour is identical.
+
+Only the context changes.
+
+The resulting risk therefore changes dramatically.
+
+---
+
+## Scenario B — Slow Insider Theft
+
+```text
+Normal behaviour:       15 files/day
+Final behaviour:        70 files/day
+Duration:               ~90 days
+Explanation:            None
+Resulting score:        72.9
+Detection:              ~7.5 weeks
+```
+
+A conventional 3-sigma detector missed this gradual increase.
+
+CrimGuard detected it using the anchored baseline.
+
+---
+
+## False Positive Testing
+
+Five ordinary simulated users were evaluated across approximately:
+
+```text
+5 users × ~220 working days
+≈ 1,100 user-days
+```
+
+Result:
+
+```text
+High-risk days: 0
+```
+
+The highest single observed day was approximately **44**.
+
+---
+
+# Key Results
+
+| Metric                            |         Result |
+| --------------------------------- | -------------: |
+| Risk variables                    |        **100** |
+| Currently populated variables     |         **64** |
+| Risk categories                   |         **10** |
+| Risk score                        |      **0–100** |
+| Legitimate 608-file day           |       **17.8** |
+| Same activity without explanation |       **96.3** |
+| Slow-creep theft                  |       **72.9** |
+| Slow-theft detection              | **~7.5 weeks** |
+| Ordinary simulated user-days      |     **~1,100** |
+| High-risk false alarms in test    |          **0** |
+| Impossible-travel threshold       |   **900 km/h** |
+| First clearance reduction         |         **75** |
+| Second clearance reduction        |         **85** |
+| Account freeze                    |         **90** |
+| Departure monitoring window       |    **14 days** |
+| Automated tests                   |        **270** |
+| External npm dependencies         |          **0** |
+
+---
+
+# Core Design Principles
+
+CrimGuard is built around several principles.
+
+### 1. Unusual does not mean malicious
+
+A spike in activity can be completely legitimate.
+
+### 2. Context matters
+
+A ticket, role change, project assignment, or other legitimate explanation can dramatically change the interpretation of behaviour.
+
+### 3. Slow theft matters
+
+Insider attacks do not necessarily look like sudden spikes.
+
+### 4. Compare users with themselves
+
+Personal baselines are often more meaningful than global thresholds.
+
+### 5. Weak evidence should not create certainty
+
+Signals such as email reputation or HR context can amplify existing risk but should not create it from nothing.
+
+### 6. Explain every decision
+
+Every risk score should have an identifiable cause.
+
+### 7. Escalate gradually
+
+Low-confidence anomalies should not immediately destroy someone's ability to work.
+
+### 8. Confirm when possible
+
+Step-up authentication and behavioural biometrics help distinguish suspicious behaviour from account takeover.
+
+### 9. Use traps for certainty
+
+A decoy interaction can provide significantly stronger evidence than statistical anomaly detection.
+
+### 10. Never fake visibility
+
+Unavailable signals are recorded as unavailable rather than being represented as zero.
+
+---
+
+# Why CrimGuard Is Different
+
+Traditional security monitoring often follows this pattern:
+
+```text
+Detect anomaly
+      ↓
+Generate alert
+      ↓
+Send alert to analyst
+      ↓
+Wait for investigation
+```
+
+CrimGuard attempts to close the loop:
+
+```text
+Observe
+   ↓
+Understand personal baseline
+   ↓
+Understand organizational context
+   ↓
+Calculate risk
+   ↓
+Explain risk
+   ↓
+Change access
+   ↓
+Challenge identity
+   ↓
+Deploy decoy if necessary
+   ↓
+Freeze if confidence becomes high
+```
+
+The goal is not simply to produce more alerts.
+
+The goal is to make the system **respond intelligently to the risk it observes**.
+
+---
+
+# Limitations
+
+CrimGuard is intentionally honest about what a browser-based platform can and cannot know.
+
+A website cannot independently observe everything happening on a user's computer.
+
+For example, without endpoint or gateway integrations, it cannot reliably see:
+
+* USB transfers
+* Files copied directly through the operating system
+* Activity in unrelated applications
+* External browser tabs
+* External email clients
+* Unauthorized cloud-storage uploads outside the platform
+* Physical badge access
+
+These signals are therefore left unpopulated rather than fabricated.
+
+Future integrations could provide additional signals through:
+
+* Endpoint Detection and Response (EDR)
+* Device management
+* Badge systems
+* Email gateways
+* Data-loss prevention systems
+* Network monitoring
+
+---
+
+# Security Philosophy
+
+CrimGuard is based on a distinction between **probability and certainty**.
+
+Most of the system deals with probability:
+
+```text
+Unusual behaviour
+      +
+Sensitive data
+      +
+No explanation
+      ↓
+High probability of malicious activity
+```
+
+A honeytrap trip is different:
+
+```text
+Fake file
+      ↓
+User modifies it
+      ↓
+Strong evidence of malicious intent
+```
+
+This allows CrimGuard to combine statistical detection with deterministic tripwires.
+
+---
+
+# The Central Idea
+
+The entire project can be summarized in one sentence:
+
+> **CrimGuard does not ask whether someone is behaving unusually; it asks whether their behaviour makes sense.**
+
+An employee accessing hundreds of files because of an approved migration should not be treated like an insider stealing data.
+
+An employee slowly increasing their access over months without any legitimate explanation should not escape detection simply because no individual day looks unusual.
+
+CrimGuard combines **behaviour, context, identity, permissions, and response** into one continuously operating security system.
+
+---
+
+# Project Status
+
+CrimGuard is implemented as a working prototype rather than a purely conceptual design.
+
+The system includes:
+
+* Functional file-sharing platform
+* Authentication
+* Role-based access control
+* File permissions
+* Risk database
+* Risk engine
+* 100-variable risk model
+* Personal baselines
+* Context-aware scoring
+* Risk-based access limiting
+* Behavioural biometrics
+* Decoy projects
+* Decoy files
+* Canary credentials
+* Departure protection
+* Download protection
+* Identity throttling
+* Admin dashboard
+* Activity logging
+* Privacy controls
+* Automated testing
+
+The documented results and figures are generated from the working system rather than being purely theoretical examples.
+
+---
+
+# Final Statement
+
+> **We are not trying to keep people out. Everyone here is already allowed in. That's the problem.**
+
+CrimGuard is designed around that problem.
+
+It watches for the difference between **someone doing their job** and **someone using their legitimate access against the organization**.
+
+And when the evidence becomes strong enough, it does not merely send an alert.
+
+**It acts.**
